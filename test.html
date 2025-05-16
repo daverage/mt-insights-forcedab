@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Advanced A/B Test Analyzer (Local - No Worker)</title>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 0; }
+    .container { width: 95%; max-width: 1200px; margin: 30px auto; padding: 25px; background-color: #ffffff; border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08); }
+    h2 { text-align: center; color: #1a1a1a; margin-bottom: 25px; }
+    .form-group { margin-bottom: 18px; }
+    .form-group label { font-weight: 500; margin-bottom: 7px; display: block; color: #444; }
+    .form-group input[type="file"], .form-group select, .form-group input[type="number"], #runAnalysisBtn, #exportCsvBtn {
+      width: 100%; padding: 10px 14px; font-size: 16px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; transition: border 0.2s ease;
+    }
+    .form-group input[type="file"]:focus, .form-group select:focus, .form-group input[type="number"]:focus { border-color: #007bff; outline: none; }
+    #runAnalysisBtn, #exportCsvBtn {
+      margin-top: 15px; background-color: #007bff; color: white; font-weight: 600; border: none; cursor: pointer;
+    }
+    #runAnalysisBtn:disabled { background-color: #ccc; cursor: not-allowed; }
+    #runAnalysisBtn:hover:enabled, #exportCsvBtn:hover { background-color: #0056b3; }
+    table { width: 100%; border-collapse: collapse; margin-top: 25px; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.05); }
+    th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #eaeaea; }
+    th { background-color: #f9fafc; color: #555; font-weight: 600; }
+    tbody tr:hover { background-color: #f5f7fa; }
+    .lift-up { color: #28a745; } /* Green */
+    .lift-down { color: #dc3545; } /* Red */
+    .significant-icon { margin-left: 5px; font-size: 1rem; }
+    .metric-star { color: #ffc107; font-size: 1.1rem; vertical-align: middle; }
+    .highlight-goal { font-weight: bold; background-color: #fffbe6 !important; }
+    #sessionInfo { margin-top: 25px; font-size: 15px; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 20px;}
+    #sessionInfo strong { color: #333; }
+    #sessionWarning { color: #d9534f; font-weight: bold; text-align: center; margin-top:10px; }
+    
+    #loaderOverlay {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background-color: rgba(255, 255, 255, 0.8);
+      display: none; justify-content: center; align-items: center;
+      z-index: 1000; flex-direction: column;
+    }
+    .spinner {
+      border: 8px solid #f3f3f3; border-top: 8px solid #007bff; 
+      border-radius: 50%; width: 60px; height: 60px;
+      animation: spin 1s linear infinite; margin-bottom: 20px;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    #loaderStatus { font-size: 18px; color: #333; font-weight: 500; }
+
+    .info-section { margin-top: 30px; font-size: 14px; line-height: 1.6; color: #555; border-top: 1px solid #eee; padding-top:20px; }
+    .info-section h3 { text-align:center; color:#2c3e50; margin-bottom: 15px; }
+    .info-section ol, .info-section ul { padding-left: 20px; }
+    .info-section code { background-color: #e8e8e8; padding: 2px 4px; border-radius: 3px; font-family: 'Courier New', Courier, monospace; }
+    #bootstrapOptions { display: none; } 
+  </style>
+</head>
+<body>
+  <div id="loaderOverlay">
+    <div class="spinner"></div>
+    <div id="loaderStatus">Processing...</div>
+  </div>
+
+  <div class="container">
+    <h2>Advanced A/B Test Analyzer (Local - No Worker)</h2>
+
+    <div class="form-group">
+      <label for="controlFile">Control File (CSV - Daily Data):</label>
+      <input type="file" id="controlFile" accept=".csv">
+    </div>
+
+    <div class="form-group">
+      <label for="experimentFile">Experiment File (CSV - Daily Data):</label>
+      <input type="file" id="experimentFile" accept=".csv">
+    </div>
+
+    <div class="form-group">
+      <label for="analysisMode">Analysis Mode:</label>
+      <select id="analysisMode">
+        <option value="bootstrap">Bootstrap Confidence Intervals (Recommended)</option>
+        <option value="ttest">Welch's T-Test (on Daily Values)</option>
+      </select>
+    </div>
+
+    <div id="bootstrapOptions" class="form-group">
+      <label for="bootstrapIterations">Bootstrap Iterations:</label>
+      <input type="number" id="bootstrapIterations" value="3000" min="100" step="100">
+    </div>
+    
+    <div class="form-group">
+      <label for="confidenceLevel">Select Significance Level (Alpha):</label>
+      <select id="confidenceLevel">
+        <option value="0.05">95% Confidence (Alpha 0.05)</option>
+        <option value="0.10">90% Confidence (Alpha 0.10)</option>
+        <option value="0.01">99% Confidence (Alpha 0.01)</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label for="goalSelect">Highlight Goal Metric:</label>
+      <select id="goalSelect" disabled></select>
+    </div>
+
+    <div class="form-group">
+      <label>
+        <input type="checkbox" id="useSessionWeighting" checked>
+        Weight metric point estimates by session count (for summary values)
+      </label>
+    </div>
+
+    <button id="runAnalysisBtn" disabled>Run Analysis</button>
+    <button id="exportCsvBtn" style="display:none;">Download Results as CSV</button>
+    <hr />
+    <div id="sessionInfo">
+      <p>
+        <strong>Control Total Sessions:</strong> <span id="controlSessions">N/A</span><br>
+        <strong>Experiment Total Sessions:</strong> <span id="experimentSessions">N/A</span>
+      </p>
+      <p id="sessionWarning" style="display: none;">
+        ⚠️ Warning: Large imbalance in session counts may affect reliability of results, especially for t-tests.
+      </p>
+    </div>
+    <table id="comparisonTable">
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th>Control</th>
+          <th>Experiment</th>
+          <th>Lift</th>
+          <th>Confidence Interval / P-value</th>
+          <th>Significant?</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <section class="info-section">
+      <h3>Tool Overview & Caveats</h3>
+      
+      <p><strong>What This Tool Does:</strong></p>
+      <ul>
+        <li><strong>Upload & Compare:</strong> Accepts two CSV files (Control & Experiment) containing <strong>daily A/B test data</strong>.</li>
+        <li><strong>Calculates Lift:</strong> Determines the percentage change (lift) between the experiment and control groups for each metric. Overall lift point estimates can be session-weighted.</li>
+        <li><strong>Statistical Analysis:</strong>
+            <ul>
+                <li><strong>Bootstrap Mode (Recommended):</strong> Simulates the experiment thousands of times by resampling daily data to estimate a confidence interval for the lift (displayed as "Middle Point ± Margin of Error"). This method is generally robust.</li>
+                <li><strong>Welch's T-Test Mode:</strong> Compares the average daily performance of metrics between groups to calculate a P-value. Assumes daily values are approximately normally distributed.</li>
+            </ul>
+        </li>
+        <li><strong>Highlights Significance:</strong> Indicates if the observed lift is statistically significant (unlikely due to random chance) at your chosen confidence level (e.g., 95%). Visual cues (arrows) are adjusted for metrics where a decrease is desirable (e.g., Bounce Rate).</li>
+      </ul>
+
+      <p><strong>Key Caveats & Best Practices:</strong></p>
+      <ol>
+        <li><strong>Data Quality is Paramount:</strong>
+            <ul>
+                <li>Ensure CSVs contain <strong>accurate, daily data</strong> (one row per day).</li>
+                <li>Control and Experiment data **must cover the exact same, valid date range**.</li>
+                <li>**Remove anomalous days** (e.g., site outages, extreme outliers) from BOTH files before uploading. Inaccurate or mismatched data will lead to misleading results.</li>
+            </ul>
+        </li>
+        <li><strong>Significance vs. Importance:</strong>
+            <ul>
+                <li>"Significant? Yes" means the result is unlikely due to random chance alone (at your chosen alpha).</li>
+                <li>It does **not** automatically mean the change is practically important or large enough to matter for your goals. Always consider the **Lift % (effect size)** and the **Confidence Interval (range of plausible effects)**.</li>
+                <li>"Significant? No" means the test didn't find enough evidence to confirm an effect, not that there's definitely no effect.</li>
+            </ul>
+        </li>
+        <li><strong>Multiple Metrics:</strong> Testing many metrics increases the chance of finding a "significant" result by chance (false positive). Prioritize 1-3 key metrics for decision-making.</li>
+        <li><strong>Assumptions:</strong>
+            <ul>
+                <li>Welch's T-Test assumes approximately normal distribution of daily metric values.</li>
+                <li>Bootstrapping assumes your daily data is representative of the underlying process.</li>
+            </ul>
+        </li>
+        <li><strong>External Factors:</strong> This tool cannot account for external events that might have influenced test results.</li>
+      </ol>
+      <p><em>This tool provides statistical insights. Always combine these with your business knowledge and context for decision-making.</em></p>
+    </section>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jstat@latest/dist/jstat.min.js"></script> 
+
+  <script>
+  document.addEventListener('DOMContentLoaded', () => {
+    let controlDailyData = null;
+    let experimentDailyData = null;
+    let controlFileSummary = null; 
+    let experimentFileSummary = null;
+    let selectedGoal = null;
+    let metricHeaders = [];
+
+    const controlFileInput = document.getElementById('controlFile');
+    const experimentFileInput = document.getElementById('experimentFile');
+    const runButton = document.getElementById('runAnalysisBtn');
+    const exportButton = document.getElementById('exportCsvBtn');
+    const goalDropdown = document.getElementById('goalSelect');
+    const analysisModeSelect = document.getElementById('analysisMode');
+    const bootstrapOptionsDiv = document.getElementById('bootstrapOptions');
+    const bootstrapIterationsInput = document.getElementById('bootstrapIterations');
+    const useSessionWeightingCheckbox = document.getElementById('useSessionWeighting');
+    const confidenceLevelSelect = document.getElementById('confidenceLevel');
+
+    const sessionWarningEl = document.getElementById('sessionWarning');
+    const loaderOverlay = document.getElementById('loaderOverlay');
+    const loaderStatusEl = document.getElementById('loaderStatus');
+    const controlSessionsEl = document.getElementById('controlSessions');
+    const experimentSessionsEl = document.getElementById('experimentSessions');
+
+    function showLoader(message = "Processing...") {
+        loaderStatusEl.textContent = message;
+        loaderOverlay.style.display = 'flex';
+    }
+    function hideLoader() {
+        loaderOverlay.style.display = 'none';
+    }
+    function updateLoaderStatus(message) {
+        if (loaderOverlay.style.display === 'flex') {
+            loaderStatusEl.textContent = message;
+        }
+    }
+
+    // --- Helper Functions directly in main script ---
+    function getCleanedValue(row, keyName) {
+        if (!row) return null;
+        const matchedKey = Object.keys(row).find(k => k.trim().toLowerCase() === keyName.toLowerCase());
+        return matchedKey ? row[matchedKey] : null;
+    }
+
+    function parseValue(valStr) {
+        if (valStr == null || typeof valStr !== 'string') return null;
+        valStr = valStr.trim();
+        if (valStr === "") return null;
+        if (valStr.includes('%')) return parseFloat(valStr.replace('%', '')) / 100;
+        if (valStr.toLowerCase().includes('minutes')) {
+            let totalSeconds = 0;
+            const minMatch = valStr.match(/([\d.]+)\s*m/i);
+            const secMatch = valStr.match(/([\d.]+)\s*s/i);
+            const justMinMatch = valStr.match(/([\d.]+)\s*minutes/i);
+            if (minMatch) totalSeconds += parseFloat(minMatch[1]) * 60;
+            if (secMatch) totalSeconds += parseFloat(secMatch[1]);
+            if (!minMatch && !secMatch && justMinMatch) {
+                 const parts = justMinMatch[1].split('.');
+                 totalSeconds += parseInt(parts[0]) * 60;
+                 if (parts.length > 1) totalSeconds += parseFloat(`0.${parts[1]}`) * 60;
+            }
+            return totalSeconds > 0 ? totalSeconds : (parseFloat(valStr.replace(/[^0-9.-]+/g, "")) || null);
+        }
+        const cleanedVal = valStr.replace(/[^0-9.-]+/g, "");
+        const num = parseFloat(cleanedVal);
+        return isNaN(num) ? null : num;
+    }
+
+    function calculateSummaryRow(dailyData, metricsToCalc, useWeighting) {
+        const summary = {};
+        if (!dailyData || dailyData.length === 0) return summary;
+        metricsToCalc.forEach(metricKey => {
+            let totalValue = 0; let totalWeight = 0; let validEntries = 0;
+            dailyData.forEach(row => {
+                const metricVal = parseValue(getCleanedValue(row, metricKey));
+                if (metricVal !== null && !isNaN(metricVal)) {
+                    if (useWeighting) {
+                        const sessionVal = parseValue(getCleanedValue(row, 'Sessions'));
+                        if (sessionVal !== null && !isNaN(sessionVal) && sessionVal > 0) {
+                            totalValue += metricVal * sessionVal; totalWeight += sessionVal; validEntries++;
+                        }
+                    } else {
+                        totalValue += metricVal; totalWeight++; validEntries++;
+                    }
+                }
+            });
+            summary[metricKey] = (validEntries > 0 && totalWeight > 0) ? totalValue / totalWeight : null;
+        });
+        summary['Sessions'] = dailyData.reduce((sum, row) => sum + (parseValue(getCleanedValue(row, 'Sessions')) || 0), 0);
+        return summary;
+    }
+
+    function calculateTTestConfidence(controlDailyVals, experimentDailyVals, alpha) {
+        if (controlDailyVals.length < 2 || experimentDailyVals.length < 2) {
+            return { pValue: null, isSignificant: false, confidenceFormatted: "N/A (Insufficient Data)" };
+        }
+        const ctrlMean = jStat.mean(controlDailyVals); const expMean = jStat.mean(experimentDailyVals);
+        const ctrlVar = jStat.variance(controlDailyVals, true); const expVar = jStat.variance(experimentDailyVals, true);
+        const n1 = controlDailyVals.length; const n2 = experimentDailyVals.length;
+        if (ctrlVar === 0 && expVar === 0 && ctrlMean === expMean) return { pValue: 1, isSignificant: false, confidenceFormatted: "P: 1.000 (No Var)"};
+        if (ctrlVar === 0 && expVar === 0 && ctrlMean !== expMean) return { pValue: 0, isSignificant: true, confidenceFormatted: "P: 0.000 (No Var, Diff Mean)"};
+        const se = Math.sqrt((ctrlVar / n1) + (expVar / n2));
+        if (se === 0 || isNaN(se)) return { pValue: (ctrlMean === expMean ? 1 : 0), isSignificant: ctrlMean !== expMean, confidenceFormatted: `P: ${ctrlMean === expMean ? 1 : 0}.000 (Zero/NaN SE)`};
+        const t = (expMean - ctrlMean) / se;
+        let df_num = Math.pow((ctrlVar / n1) + (expVar / n2), 2);
+        let df_den = (Math.pow(ctrlVar / n1, 2) / (n1 - 1)) + (Math.pow(expVar / n2, 2) / (n2 - 1));
+        if (df_den === 0 || isNaN(df_den)) df_den = 1e-9; 
+        const df = Math.max(1, df_num / df_den); 
+        const pValue = 2 * (1 - jStat.studentt.cdf(Math.abs(t), df));
+        return { pValue, isSignificant: pValue < alpha, confidenceFormatted: `P: ${pValue.toFixed(3)}` };
+    }
+
+    function calculateBootstrapLiftCI(controlDaily, experimentDaily, metricKey, iterations, alpha) {
+        const lifts = [];
+        if (!controlDaily || controlDaily.length === 0 || !experimentDaily || experimentDaily.length === 0) {
+             return { isSignificant: false, confidenceFormatted: "N/A (Insufficient Data)" };
+        }
+        for (let i = 0; i < iterations; i++) {
+            const controlSample = [];
+            for (let j = 0; j < controlDaily.length; j++) controlSample.push(controlDaily[Math.floor(Math.random() * controlDaily.length)]);
+            const experimentSample = [];
+            for (let j = 0; j < experimentDaily.length; j++) experimentSample.push(experimentDaily[Math.floor(Math.random() * experimentDaily.length)]);
+            const controlSummaryBoot = calculateSummaryRow(controlSample, [metricKey, 'Sessions'], true); 
+            const experimentSummaryBoot = calculateSummaryRow(experimentSample, [metricKey, 'Sessions'], true);
+            const ctrlMetricValBoot = controlSummaryBoot[metricKey];
+            const expMetricValBoot = experimentSummaryBoot[metricKey];
+            if (ctrlMetricValBoot !== null && expMetricValBoot !== null && !isNaN(ctrlMetricValBoot) && !isNaN(expMetricValBoot)) {
+                if (ctrlMetricValBoot !== 0) lifts.push((expMetricValBoot - ctrlMetricValBoot) / ctrlMetricValBoot);
+                else if (expMetricValBoot > 0) lifts.push(Infinity);
+                else if (expMetricValBoot === 0) lifts.push(0);
+            }
+        }
+        const validLifts = lifts.filter(l => l !== null && !isNaN(l) && isFinite(l));
+        if (validLifts.length < iterations * 0.5 || validLifts.length < 20) {
+             return { isSignificant: false, confidenceFormatted: validLifts.length < 20 ? "N/A (Too Few Valid Lifts)" : "N/A (Unstable Bootstrap)" };
+        }
+        validLifts.sort((a, b) => a - b);
+        const lowerIdx = Math.floor((alpha / 2) * validLifts.length);
+        const upperIdx = Math.min(validLifts.length - 1, Math.ceil((1 - alpha / 2) * validLifts.length) -1);
+        const lowerBoundRaw = validLifts[lowerIdx]; const upperBoundRaw = validLifts[upperIdx];
+        const lowerBoundPercent = lowerBoundRaw * 100; const upperBoundPercent = upperBoundRaw * 100;
+        const middlePointPercent = (lowerBoundPercent + upperBoundPercent) / 2;
+        const marginOfErrorPercent = (upperBoundPercent - lowerBoundPercent) / 2;
+        const isSignificant = (lowerBoundRaw > 0 && upperBoundRaw > 0) || (lowerBoundRaw < 0 && upperBoundRaw < 0);
+        return { isSignificant, confidenceFormatted: `${middlePointPercent.toFixed(1)}% ± ${marginOfErrorPercent.toFixed(1)}%` };
+    }
+    // --- END Helper Functions ---
+
+    controlFileInput.addEventListener('change', handleFileSelect);
+    experimentFileInput.addEventListener('change', handleFileSelect);
+    runButton.addEventListener('click', runAnalysisAsync); 
+    exportButton.addEventListener('click', downloadCSV);
+    goalDropdown.addEventListener('change', () => {
+      selectedGoal = goalDropdown.value;
+      if (document.querySelector("#comparisonTable tbody").innerHTML) {
+        const results = JSON.parse(runButton.dataset.results || '[]');
+        displayMetrics(results);
+      }
+    });
+    analysisModeSelect.addEventListener('change', () => {
+        bootstrapOptionsDiv.style.display = analysisModeSelect.value === 'bootstrap' ? 'block' : 'none';
+    });
+    bootstrapOptionsDiv.style.display = analysisModeSelect.value === 'bootstrap' ? 'block' : 'none';
+
+    function handleFileSelect() {
+        const controlFile = controlFileInput.files[0];
+        const experimentFile = experimentFileInput.files[0];
+        runButton.disabled = true; goalDropdown.disabled = true;
+        goalDropdown.innerHTML = '<option value="">-- Select Goal --</option>';
+        controlDailyData = null; experimentDailyData = null; controlFileSummary = null; experimentFileSummary = null;
+        metricHeaders = []; controlSessionsEl.textContent = 'N/A'; experimentSessionsEl.textContent = 'N/A';
+        sessionWarningEl.style.display = 'none'; exportButton.style.display = 'none';
+        document.querySelector("#comparisonTable tbody").innerHTML = '';
+
+        if (controlFile && experimentFile) {
+            showLoader('Parsing files...');
+            Promise.all([
+                parseCSVFromFile(controlFile), 
+                parseCSVFromFile(experimentFile)
+            ]).then(([controlResult, experimentResult]) => {
+                controlDailyData = controlResult.dailyData; controlFileSummary = controlResult.summaryRow;
+                experimentDailyData = experimentResult.dailyData; experimentFileSummary = experimentResult.summaryRow;
+                if (!controlDailyData || !controlDailyData.length || !experimentDailyData || !experimentDailyData.length) {
+                    updateLoaderStatus('Error: One or both files lack valid daily data rows.'); setTimeout(hideLoader, 2000); return;
+                }
+                const controlTotalSessions = controlFileSummary ? getCleanedValue(controlFileSummary, 'Sessions') : controlDailyData.reduce((sum, row) => sum + (parseValue(getCleanedValue(row, 'Sessions')) || 0), 0);
+                const experimentTotalSessions = experimentFileSummary ? getCleanedValue(experimentFileSummary, 'Sessions') : experimentDailyData.reduce((sum, row) => sum + (parseValue(getCleanedValue(row, 'Sessions')) || 0), 0);
+                controlSessionsEl.textContent = controlTotalSessions ? parseFloat(controlTotalSessions).toLocaleString() : 'N/A';
+                experimentSessionsEl.textContent = experimentTotalSessions ? parseFloat(experimentTotalSessions).toLocaleString() : 'N/A';
+                const cSess = parseFloat(controlTotalSessions); const eSess = parseFloat(experimentTotalSessions);
+                if (cSess && eSess) sessionWarningEl.style.display = (cSess / eSess > 1.5 || cSess / eSess < 0.66) ? 'block' : 'none';
+                const controlMetrics = Object.keys(controlDailyData[0] || {}).map(k => k.trim().toLowerCase());
+                const experimentMetrics = Object.keys(experimentDailyData[0] || {}).map(k => k.trim().toLowerCase());
+                metricHeaders = controlMetrics.filter(m => experimentMetrics.includes(m) && !['offer date', 'sessions'].includes(m))
+                                         .map(mKey => Object.keys(controlDailyData[0]).find(k => k.trim().toLowerCase() === mKey));
+                if (metricHeaders.length > 0) {
+                    populateGoalDropdown(metricHeaders); runButton.disabled = false; updateLoaderStatus('Files loaded. Ready for analysis.');
+                } else { updateLoaderStatus('Error: No common metrics found or essential columns missing.'); }
+                setTimeout(hideLoader, 1000);
+            }).catch(error => { updateLoaderStatus(`Error parsing files: ${error.message}`); console.error(error); setTimeout(hideLoader, 3000); });
+        } else { hideLoader(); }
+    }
+
+    function parseCSVFromFile(file) { 
+        return new Promise((resolve, reject) => {
+            Papa.parse(file, {
+                header: true, skipEmptyLines: true, dynamicTyping: false, transformHeader: header => header.trim(),
+                complete: results => {
+                    if (results.errors.length) return reject(new Error(`CSV parsing error in ${file.name}: ${results.errors[0].message}`));
+                    let data = results.data; let summaryRow = null; let dailyData = [];
+                    if (data.length > 0) {
+                        const lastRow = data[data.length - 1];
+                        const dateKey = Object.keys(lastRow).find(k => k.trim().toLowerCase() === 'offer date');
+                        if (dateKey && lastRow[dateKey] && (lastRow[dateKey].toLowerCase().includes('summary') || !/^\d{4}-\d{2}-\d{2}$/.test(lastRow[dateKey].trim()))){
+                            summaryRow = data.pop(); 
+                        }
+                        dailyData = data.filter(row => { 
+                            const sessionsVal = getCleanedValue(row, 'Sessions');
+                            return sessionsVal !== null && sessionsVal !== '' && !isNaN(parseFloat(sessionsVal));
+                        });
+                    }
+                    resolve({ dailyData, summaryRow });
+                }, error: error => reject(error)
+            });
+        });
+    }
+    
+    function populateGoalDropdown(metrics) {
+        goalDropdown.innerHTML = '<option value="">-- Select Goal --</option>';
+        metrics.forEach(metric => {
+            if (metric.trim().toLowerCase() === 'offer date' || metric.trim().toLowerCase() === 'sessions') return;
+            const option = document.createElement('option'); option.value = metric; option.textContent = metric;
+            goalDropdown.appendChild(option);
+        });
+        goalDropdown.disabled = false;
+        if (metrics.length > 0) { selectedGoal = metrics[0]; goalDropdown.value = selectedGoal; }
+    }
+
+    function formatValueForDisplay(metricName, value) {
+        if (value === null || value === undefined || (typeof value === 'number' && isNaN(value))) return "N/A";
+        metricName = metricName.trim().toLowerCase();
+        if (metricName.includes("rate") || metricName.includes("conversion") || metricName.includes("add to cart") || metricName.includes("abandonment")) return (value * 100).toFixed(2) + "%";
+        if (metricName.includes("revenue") || metricName.includes("value")) return `£${value.toFixed(2)}`;
+        if (metricName.includes("time")) {
+            const totalSeconds = Math.round(value); const mins = Math.floor(totalSeconds / 60); const secs = totalSeconds % 60;
+            return `${mins}m ${secs}s`;
+        }
+        if (metricName.includes("page views")) return value.toFixed(2);
+        return typeof value === 'number' ? value.toFixed(2) : String(value);
+    }
+
+    function runAnalysisAsync() {
+        showLoader("Initializing analysis...");
+        runButton.disabled = true; exportButton.style.display = 'none';
+        document.querySelector("#comparisonTable tbody").innerHTML = '';
+
+        const allResults = [];
+        const alpha = parseFloat(confidenceLevelSelect.value);
+        const mode = analysisModeSelect.value;
+        const iterations = parseInt(bootstrapIterationsInput.value);
+        const useWeightingPointEst = useSessionWeightingCheckbox.checked;
+
+        const controlSummaryOverall = calculateSummaryRow(controlDailyData, metricHeaders, useWeightingPointEst);
+        const experimentSummaryOverall = calculateSummaryRow(experimentDailyData, metricHeaders, useWeightingPointEst);
+
+        let metricIndex = 0;
+        function processNextMetric() {
+            if (metricIndex >= metricHeaders.length) {
+                runButton.dataset.results = JSON.stringify(allResults);
+                displayMetrics(allResults);
+                exportButton.style.display = 'inline-block';
+                updateLoaderStatus("Analysis complete!");
+                setTimeout(hideLoader, 1500);
+                runButton.disabled = false;
+                return;
+            }
+
+            const metricKey = metricHeaders[metricIndex];
+            updateLoaderStatus(`Processing: ${metricKey} (${metricIndex + 1}/${metricHeaders.length})`);
+
+            setTimeout(() => {
+                const ctrlOverallMetricVal = controlSummaryOverall[metricKey];
+                const expOverallMetricVal = experimentSummaryOverall[metricKey];
+                let lift = null;
+                if (ctrlOverallMetricVal !== null && expOverallMetricVal !== null && ctrlOverallMetricVal !== 0) {
+                    lift = ((expOverallMetricVal - ctrlOverallMetricVal) / ctrlOverallMetricVal) * 100;
+                } else if (ctrlOverallMetricVal === 0 && expOverallMetricVal > 0) lift = Infinity;
+                else if (ctrlOverallMetricVal === 0 && expOverallMetricVal === 0) lift = 0;
+
+                let significanceResult;
+                if (mode === 'ttest') {
+                    const controlDailyMetricValues = controlDailyData.map(row => parseValue(getCleanedValue(row, metricKey))).filter(v => v !== null && !isNaN(v));
+                    const experimentDailyMetricValues = experimentDailyData.map(row => parseValue(getCleanedValue(row, metricKey))).filter(v => v !== null && !isNaN(v));
+                    significanceResult = calculateTTestConfidence(controlDailyMetricValues, experimentDailyMetricValues, alpha);
+                } else {
+                    significanceResult = calculateBootstrapLiftCI(controlDailyData, experimentDailyData, metricKey, iterations, alpha);
+                }
+                
+                let icon = '';
+                const metricKeyLower = metricKey.toLowerCase().trim();
+                const negativeIsGoodMetrics = ['bounce rate', 'cart abandonment'];
+
+                if (lift !== null && !isNaN(lift)) {
+                    if (negativeIsGoodMetrics.includes(metricKeyLower)) {
+                        if (lift < 0) icon = '<span class="significant-icon lift-up">▼</span>'; // Green down
+                        else if (lift > 0) icon = '<span class="significant-icon lift-down">▲</span>'; // Red up
+                        else icon = '<span class="significant-icon" style="font-weight:1000;color: goldenrod;">–</span>';
+                    } else {
+                        if (lift > 0) icon = '<span class="significant-icon lift-up">▲</span>'; // Green up
+                        else if (lift < 0) icon = '<span class="significant-icon lift-down">▼</span>'; // Red down
+                        else icon = '<span class="significant-icon" style="font-weight:1000;color: goldenrod;">–</span>';
+                    }
+                }
+
+                allResults.push({
+                    metric: metricKey,
+                    controlValFormatted: formatValueForDisplay(metricKey, ctrlOverallMetricVal),
+                    experimentValFormatted: formatValueForDisplay(metricKey, expOverallMetricVal),
+                    lift: lift,
+                    confidenceFormatted: significanceResult.confidenceFormatted,
+                    isSignificant: significanceResult.isSignificant,
+                    icon: icon,
+                    absLift: Math.abs(lift || 0)
+                });
+                metricIndex++;
+                processNextMetric(); 
+            }, 0); 
+        }
+        processNextMetric(); 
+    }
+
+    function displayMetrics(resultsData) {
+        const tableBody = document.querySelector("#comparisonTable tbody");
+        tableBody.innerHTML = ''; 
+        resultsData.sort((a, b) => {
+            if (a.isSignificant !== b.isSignificant) return b.isSignificant - a.isSignificant; 
+            if (a.isSignificant) { 
+                 // For "negative is good" metrics, a significant negative lift is "better"
+                const metricALower = a.metric.toLowerCase().trim();
+                const metricBLower = b.metric.toLowerCase().trim();
+                const negativeIsGoodMetrics = ['bounce rate', 'cart abandonment'];
+
+                const aIsNegativeGood = negativeIsGoodMetrics.includes(metricALower);
+                const bIsNegativeGood = negativeIsGoodMetrics.includes(metricBLower);
+
+                if (aIsNegativeGood && a.lift < 0 && (!bIsNegativeGood || b.lift >=0)) return -1; // Sig negative for a "good decrease" metric comes first
+                if (bIsNegativeGood && b.lift < 0 && (!aIsNegativeGood || a.lift >=0)) return 1;
+                
+                // Standard: positive lifts first for "normal" metrics or if both are same type
+                if (a.lift > 0 && b.lift <= 0) return -1; 
+                if (a.lift <= 0 && b.lift > 0) return 1;  
+            }
+            return b.absLift - a.absLift; 
+        });
+        resultsData.forEach(res => {
+            const row = document.createElement('tr');
+            const isGoal = res.metric === selectedGoal;
+            row.className = isGoal ? 'highlight-goal' : '';
+            row.innerHTML = `
+              <td>${res.metric}${res.isSignificant ? ' <span class="metric-star" title="Statistically Significant">⭐</span>' : ''}</td>
+              <td>${res.controlValFormatted}</td>
+              <td>${res.experimentValFormatted}</td>
+              <td>${(res.lift !== null && isFinite(res.lift)) ? res.lift.toFixed(1) + '%' : (res.lift === Infinity ? '+∞%' : 'N/A')} ${res.icon}</td>
+              <td>${res.confidenceFormatted}</td>
+              <td>${res.isSignificant ? 'Yes' : 'No'}</td>
+            `;
+            tableBody.appendChild(row);
+        });
+    }
+
+    function downloadCSV() {
+        const header = [['Metric', 'Control', 'Experiment', 'Lift (%)', 'Confidence Display (Bootstrap: Mid ± MoE; T-Test: P-value)', 'Significant?']];
+        const tableRows = Array.from(document.querySelectorAll("#comparisonTable tbody tr"));
+        const dataRows = tableRows.map(tr =>
+            Array.from(tr.querySelectorAll('td')).map(td => {
+                let text = td.textContent.trim();
+                if (td.cellIndex === 0) text = text.replace('⭐', '').trim();
+                return `"${text.replace(/"/g, '""')}"`; 
+            })
+        );
+        const csvContent = header.concat(dataRows).map(e => e.join(",")).join("\n");
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'ab_test_analysis_results.csv';
+        link.style.display = 'none'; document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    }
+  });
+  </script>
+</body>
+</html>
