@@ -202,11 +202,42 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Date Helper Functions ---
     function getDateFromRow(row) {
-        const dateStr = getCleanedValue(row, 'Offer Date');
-        if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr).trim())) return null;
-        // Adding T00:00:00Z ensures the date is parsed as UTC midnight, avoiding timezone issues
-        // that can shift the date depending on the user's local timezone.
-        return new Date(String(dateStr).trim() + "T00:00:00Z");
+        // Accept both 'Offer Date' and 'Date' (case-insensitive)
+        const dateKey = Object.keys(row).find(k => k.trim().toLowerCase() === 'offer date' || k.trim().toLowerCase() === 'date');
+        if (!dateKey) return null;
+        const dateStr = row[dateKey];
+        if (!dateStr) return null;
+        // Try to parse ISO, UK, and US formats
+        let parsedDate = null;
+        // Try YYYY-MM-DD (ISO)
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) {
+            parsedDate = new Date(dateStr.trim() + "T00:00:00Z");
+        } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr.trim())) {
+            // Try DD/MM/YYYY or MM/DD/YYYY (ambiguous, default to UK: DD/MM/YYYY)
+            const [d1, d2, y] = dateStr.trim().split('/').map(Number);
+            // If d1 > 12, it's definitely DD/MM/YYYY
+            if (d1 > 12) {
+                parsedDate = new Date(Date.UTC(y, d2 - 1, d1));
+            } else {
+                // If d2 > 12, it's MM/DD/YYYY (US)
+                if (d2 > 12) {
+                    parsedDate = new Date(Date.UTC(y, d1 - 1, d2));
+                } else {
+                    // Ambiguous, default to UK (DD/MM/YYYY)
+                    parsedDate = new Date(Date.UTC(y, d2 - 1, d1));
+                }
+            }
+        } else if (/^\d{4}\/\d{2}\/\d{2}$/.test(dateStr.trim())) {
+            // Try YYYY/MM/DD
+            const [y, m, d] = dateStr.trim().split('/').map(Number);
+            parsedDate = new Date(Date.UTC(y, m - 1, d));
+        } else {
+            // Try Date.parse fallback (may be locale-dependent)
+            const tryDate = new Date(dateStr.trim());
+            if (!isNaN(tryDate.getTime())) parsedDate = tryDate;
+        }
+        if (!parsedDate || isNaN(parsedDate.getTime())) return null;
+        return parsedDate;
     }
 
     function formatDate(date) {
@@ -467,31 +498,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 complete: results => {
                     if (results.errors.length) return reject(new Error(`CSV parsing error in ${file.name}: ${results.errors[0].message}`));
                     let data = results.data;
-                    let summaryRow = null; // Summary row extraction from original file is less important now.
                     let dailyData = [];
-                    if (data.length > 0) {
-                        const dateKeyName = Object.keys(data[0]).find(k => k.trim().toLowerCase() === 'offer date');
-                        if (!dateKeyName) {
-                             // Reject if 'Offer Date' column is missing, as it's crucial for date processing
-                             return reject(new Error(`'Offer Date' column not found in ${file.name}. This column is required.`));
-                        }
-
-                        const lastRow = data[data.length - 1];
-                        const dateValLastRow = getCleanedValue(lastRow, 'Offer Date');
-                        if (dateValLastRow && (String(dateValLastRow).toLowerCase().includes('summary') || !/^\d{4}-\d{2}-\d{2}$/.test(String(dateValLastRow).trim()))){
-                            // summaryRow = data.pop(); // We might not need this if we always calculate from daily.
-                            data.pop(); // Still remove it from daily data
-                        }
-                        dailyData = data.filter(row => {
-                            const sessionsValStr = getCleanedValue(row, 'Sessions');
-                            if (sessionsValStr === null || String(sessionsValStr).trim() === '') return false;
-                            const sessionsValNum = parseFloat(String(sessionsValStr).replace(/[^0-9.-]+/g, ''));
-                            // Also ensure 'Offer Date' is present and somewhat valid for this row
-                            const offerDateVal = getDateFromRow(row);
-                            return !isNaN(sessionsValNum) && offerDateVal !== null;
-                        });
+                    // Accept both 'Offer Date' and 'Date' as the date column
+                    const dateKeyName = Object.keys(data[0] || {}).find(k => k.trim().toLowerCase() === 'offer date' || k.trim().toLowerCase() === 'date');
+                    if (!dateKeyName) {
+                        return reject(new Error(`No date column found in ${file.name}. Please ensure there is a column named 'Offer Date' or 'Date'. Supported formats: YYYY-MM-DD, YYYY/MM/DD, DD/MM/YYYY, MM/DD/YYYY.`));
                     }
-                    resolve({ dailyData /*, summaryRow */ });
+                    // Remove summary row if present
+                    const lastRow = data[data.length - 1];
+                    const dateValLastRow = lastRow ? lastRow[dateKeyName] : null;
+                    if (dateValLastRow && (String(dateValLastRow).toLowerCase().includes('summary') || getDateFromRow(lastRow) === null)){
+                        data.pop();
+                    }
+                    dailyData = data.filter(row => {
+                        // Accept both 'Sessions' and warn if missing
+                        const sessionsKey = Object.keys(row).find(k => k.trim().toLowerCase() === 'sessions');
+                        if (!sessionsKey) return false; // Will warn below
+                        const sessionsValStr = row[sessionsKey];
+                        if (sessionsValStr === null || String(sessionsValStr).trim() === '') return false;
+                        const sessionsValNum = parseFloat(String(sessionsValStr).replace(/[^0-9.-]+/g, ''));
+                        const offerDateVal = getDateFromRow(row);
+                        return !isNaN(sessionsValNum) && offerDateVal !== null;
+                    });
+                    // Warn if 'Sessions' column is missing
+                    const hasSessions = Object.keys(data[0] || {}).some(k => k.trim().toLowerCase() === 'sessions');
+                    if (!hasSessions) {
+                        alert(`Warning: No 'Sessions' column found in ${file.name}. Some features and weighting will be unavailable. Results may be less accurate.`);
+                    }
+                    resolve({ dailyData });
                 }, error: error => reject(error)
             });
         });
