@@ -10,20 +10,24 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css" />
   <!-- Monetate Brand/Modern Palette and UI Styles applied -->
+  <title>A/B Test Results Analyzer</title> <!-- Added a title -->
 </head>
 <body>
   <a href="#main-content" class="skip-link">Skip to main content</a>
+
   <div id="loaderOverlay">
     <div class="spinner" role="status" aria-label="Loading"></div>
     <div id="loaderStatus" aria-live="polite">Processing...</div>
   </div>
-  <div class="header-container" role="banner">
+
+  <header class="header-container" role="banner"> <!-- Changed div to header for semantics -->
     <h1 tabindex="0">A/B Test Results Analyzer</h1>
-  </div>
+  </header>
+
   <main id="main-content" tabindex="-1">
-    <div class="container card" role="main">
-      <h2>Modern, Robust, Transparent</h2>
-      <form aria-label="A/B Test Analysis Form" style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px;">
+    <div class="container card" role="form" aria-labelledby="form-heading"> <!-- Changed role to form and added aria-labelledby -->
+      <h2 id="form-heading">Modern, Robust, Transparent</h2>
+      <form aria-labelledby="form-heading" style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px;">
         <div style="flex: 1 1 350px; min-width: 250px;">
           <div class="form-group">
             <label for="controlFile">Control File (CSV - Daily Data):</label>
@@ -54,50 +58,69 @@
           </div>
           <div class="form-group">
             <label for="goalSelect">Highlight Goal Metric:</label>
-            <select id="goalSelect" disabled></select>
+            <select id="goalSelect" disabled aria-label="Select a metric to highlight in the results table"></select> <!-- Added aria-label -->
           </div>
           <div class="form-group">
-            <label for="useSessionWeighting">
+            <label for="useSessionWeighting" class="checkbox-label"> <!-- Added class for potential styling -->
               <input type="checkbox" id="useSessionWeighting" checked>
               Weight metric point estimates by session count (for summary values)
             </label>
           </div>
         </div>
         <div style="flex: 0 0 220px; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; min-width: 180px;">
-          <button id="runAnalysisBtn" disabled type="submit" style="width: 180px;">Run Analysis</button>
+          <!-- Changed Run Analysis to type="button" to prevent default form submission, JS handles it -->
+          <button id="runAnalysisBtn" disabled type="button" style="width: 180px;">Run Analysis</button>
           <button id="exportCsvBtn" style="display:none; width: 180px;" type="button">Download Results as CSV</button>
         </div>
       </form>
       <hr />
       <div id="sessionInfo" aria-live="polite">
         <p>
-          <strong>Control Total Sessions:</strong> <span id="controlSessions">N/A</span><br>
-          <strong>Experiment Total Sessions:</strong> <span id="experimentSessions">N/A</span>
+          <strong>Control Total Sessions (Analyzed Period):</strong> <span id="controlSessions">N/A</span><br>
+          <strong>Experiment Total Sessions (Analyzed Period):</strong> <span id="experimentSessions">N/A</span>
         </p>
-        <p id="sessionWarning" style="display: none;">
+        <p id="sessionWarning" style="display: none; color: orange;"> <!-- Added color for emphasis -->
           ⚠️ Warning: Large imbalance in session counts may affect reliability of results, especially for t-tests.
         </p>
       </div>
-      <table id="comparisonTable" aria-describedby="table-desc">
-        <caption id="table-desc" class="sr-only">Comparison of control and experiment metrics, showing absolute and relative changes, uncertainty, and statistical significance.</caption>
-        <thead>
-          <tr>
-            <th scope="col">Metric</th>
-            <th scope="col">Control</th>
-            <th scope="col">Experiment</th>
-            <th scope="col">Abs. Change</th>
-            <th scope="col">Rel. Change (%)</th>
-            <th scope="col">Uncertainty</th>
-            <th scope="col">Significant?</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <section class="info-section" aria-label="How to Use & Statistical Notes">
-        <h3>How to Use & Statistical Notes</h3>
+
+      <!-- === ADDED CAVEATS SECTION HERE === -->
+      <div id="analysisCaveats" class="caveats-section" style="display:none; border: 1px solid #ccc; padding: 10px; margin-bottom: 15px; background-color: #f9f9f9; border-radius: 4px;" aria-live="polite" aria-atomic="true">
+        <!-- Caveats will be injected here by JavaScript -->
+      </div>
+      <!-- === END CAVEATS SECTION === -->
+
+      <!-- === ADDED INSIGHTS SECTION HERE === -->
+      <div id="generatedInsights" class="insights-section" style="display:none; margin-top: 20px; padding:15px; border: 1px solid #4CAF50; background-color: #e8f5e9; border-radius: 4px;" aria-live="polite" aria-atomic="true">
+        <!-- Insights will be generated here by JavaScript -->
+      </div>
+      <!-- === END INSIGHTS SECTION === -->
+
+      <div class="table-container"> <!-- Added a wrapper for table for potential overflow styling -->
+        <table id="comparisonTable" aria-describedby="table-desc">
+          <caption id="table-desc" class="sr-only">Comparison of control and experiment metrics, showing absolute and relative changes, uncertainty, and statistical significance.</caption>
+          <thead>
+            <tr>
+              <th scope="col">Metric</th>
+              <th scope="col">Control</th>
+              <th scope="col">Experiment</th>
+              <th scope="col">Abs. Change</th>
+              <th scope="col">Rel. Change (%)</th>
+              <th scope="col">Uncertainty</th>
+              <th scope="col">Significant?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Results will be injected here -->
+          </tbody>
+        </table>
+      </div>
+
+      <section class="info-section" aria-labelledby="info-heading"> <!-- Changed aria-label to aria-labelledby -->
+        <h3 id="info-heading">How to Use & Statistical Notes</h3>
         <p><strong>What This Tool Does:</strong></p>
         <ul>
-          <li><strong>Upload & Compare:</strong> Upload two CSV files (Control & Experiment) with <strong>daily A/B test data</strong> for the same date range.</li>
+          <li><strong>Upload & Compare:</strong> Upload two CSV files (Control & Experiment) with <strong>daily A/B test data</strong>. The tool will attempt to align data to concurrent date ranges for fair comparison.</li>
           <li><strong>Clear Change Breakdown:</strong> For each metric, see the absolute change (e.g., +£0.15, +2.5pp), relative change (lift, %), and uncertainty (confidence interval or p-value).</li>
           <li><strong>Statistical Rigor:</strong>
               <ul>
@@ -106,22 +129,30 @@
               </ul>
           </li>
           <li><strong>Significance Highlighted:</strong> Statistically significant results (at your chosen confidence level) are clearly marked with a star and "Yes" in the table. Arrows indicate direction and whether a change is good or bad for each metric.</li>
-          <li><strong>Multiple Metrics Correction:</strong> Adjusts for multiple comparisons using the Benjamini-Hochberg procedure to control false discoveries.</li>
+          <li><strong>Multiple Metrics Correction (Bootstrap Mode):</strong> Adjusts for multiple comparisons using the Benjamini-Hochberg procedure to control false discoveries when using bootstrap mode.</li>
         </ul>
         <p><strong>Best Practices & Caveats:</strong></p>
         <ol>
-          <li><strong>Data Quality:</strong> Ensure both CSVs have accurate, daily data for the same date range. Remove outliers and anomalies from both files before upload.</li>
-          <li><strong>Significance ≠ Importance:</strong> "Significant? Yes" means the result is unlikely to due to random chance, but always consider the size and business impact of the change. "No" means the test was inconclusive, not that there is no effect.</li>
+          <li><strong>Data Quality:</strong> Ensure both CSVs have accurate, daily data. The tool requires an 'Offer Date' column (YYYY-MM-DD) and a 'Sessions' column. Remove outliers and anomalies from both files before upload if possible.</li>
+          <li><strong>Significance ≠ Importance:</strong> "Significant? Yes" means the result is unlikely to due to random chance *under the conditions of the analysis*, but always consider the size and business impact of the change. "No" means the test was inconclusive, not that there is no effect.</li>
           <li><strong>Multiple Metrics:</strong> Testing many metrics increases the chance of a false positive. Focus on your primary goal metric(s) for decisions.</li>
-          <li><strong>Assumptions:</strong> Bootstrap is robust to non-normality; t-test assumes daily values are roughly normal. Both require representative daily data.</li>
-          <li><strong>External Factors:</strong> The tool cannot account for outside events that may have influenced results.</li>
+          <li><strong>Assumptions:</strong> Bootstrap is robust to non-normality; t-test assumes daily values are roughly normal. Both require representative daily data for the analyzed period.</li>
+          <li><strong>External Factors:</strong> The tool cannot account for outside events that may have influenced results during the test period.</li>
+          <li><strong>Sequential Tests:</strong> If data is from non-overlapping periods, the tool will warn you. Such results are highly susceptible to time-based confounding factors.</li>
         </ol>
-        <p><em>This tool provides statistical evidence. Always combine with business context and judgment for decisions.</em></p>
+        <p><em>This tool provides statistical evidence. Always combine with business context and judgment for decisions. Pay close attention to any automated notes and caveats provided above the results table.</em></p>
       </section>
     </div>
   </main>
+  <footer> <!-- Added a simple footer -->
+    <p>© <span id="currentYear"></span> A/B Test Analyzer Tool. For demonstration purposes.</p>
+  </footer>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jstat@latest/dist/jstat.min.js"></script> 
+  <script src="https://cdn.jsdelivr.net/npm/jstat@latest/dist/jstat.min.js"></script>
   <script src="script.js"></script>
+  <script>
+    // Simple script to set current year in footer
+    document.getElementById('currentYear').textContent = new Date().getFullYear();
+  </script>
 </body>
 </html>
