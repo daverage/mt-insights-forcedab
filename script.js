@@ -1,3 +1,6 @@
+// Define globally within DOMContentLoaded
+const NEGATIVE_IS_GOOD_METRICS = ['bounce rate', 'cart abandonment', 'exit rate'];
+
 document.addEventListener('DOMContentLoaded', () => {
     let controlDailyData = null;
     let experimentDailyData = null;
@@ -21,6 +24,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const bootstrapIterationsInput = document.getElementById('bootstrapIterations');
     const useSessionWeightingCheckbox = document.getElementById('useSessionWeighting');
     const confidenceLevelSelect = document.getElementById('confidenceLevel');
+    const powerOptionsDiv = document.getElementById('powerOptions');
+    const desiredPowerInput = document.getElementById('desiredPower');
 
     const sessionWarningEl = document.getElementById('sessionWarning');
     const loaderOverlay = document.getElementById('loaderOverlay');
@@ -109,11 +114,30 @@ document.addEventListener('DOMContentLoaded', () => {
         const lowerBoundLift = lifts.length > 0 ? lifts[safeLowerIdx] : 0;
         const upperBoundLift = lifts.length > 0 ? lifts[safeUpperIdx] : 0;
 
+        let p_value_bootstrap;
+        if (lifts.length === 0) {
+            p_value_bootstrap = 1.0;
+        } else {
+            const iterations = lifts.length;
+            // Sort lifts to get the median
+            const sortedLifts = [...lifts].sort((a, b) => a - b);
+            const medianLift = sortedLifts[Math.floor(iterations / 2)];
+            let countOtherSide;
+            if (medianLift > 0) {
+                countOtherSide = lifts.filter(l => l <= 0).length;
+            } else {
+                countOtherSide = lifts.filter(l => l > 0).length;
+            }
+            p_value_bootstrap = 2 * (countOtherSide / iterations);
+            if (p_value_bootstrap > 1.0) p_value_bootstrap = 1.0;
+        }
+
         return {
             lift: medianLift,
             lowerBound: lowerBoundLift,
             upperBound: upperBoundLift,
-            significant: (lowerBoundLift > 0 && upperBoundLift > 0) || (lowerBoundLift < 0 && upperBoundLift < 0)
+            significant: (lowerBoundLift > 0 && upperBoundLift > 0) || (lowerBoundLift < 0 && upperBoundLift < 0),
+            pValue: p_value_bootstrap
         };
     }
 
@@ -198,6 +222,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const df = Math.max(1, df_num / df_den);
         const pValue = 2 * (1 - jStat.studentt.cdf(Math.abs(t), df));
         return { pValue, isSignificant: pValue < alpha, confidenceFormatted: `P: ${pValue.toFixed(3)}` };
+    }
+
+    function calculatePostHocMDE(alpha, power, n1, var1, n2, var2, baselineMeanControl) {
+        // Robust jStat dependency check
+        if (!window.jStat || !window.jStat.studentt || typeof window.jStat.studentt.inv !== 'function') {
+            console.warn("jStat is not available for MDE calculation.");
+            return { absoluteMDE: null, relativeMDEPercent: null };
+        }
+        if (n1 < 2 || n2 < 2 || var1 < 0 || var2 < 0) return { absoluteMDE: null, relativeMDEPercent: null };
+        if (!isFinite(baselineMeanControl) || baselineMeanControl === 0) return { absoluteMDE: null, relativeMDEPercent: null };
+        const beta = 1 - power;
+        const df_welch = Math.pow(var1 / n1 + var2 / n2, 2) /
+            ((Math.pow(var1 / n1, 2) / (n1 - 1)) + (Math.pow(var2 / n2, 2) / (n2 - 1)));
+        const t_alpha_half = window.jStat.studentt.inv(1 - alpha / 2, df_welch);
+        const t_beta = window.jStat.studentt.inv(1 - beta, df_welch);
+        // Absolute MDE
+        const absMDE = (t_alpha_half + t_beta) * Math.sqrt(var1 / n1 + var2 / n2);
+        // Relative MDE
+        const relMDE = absMDE / Math.abs(baselineMeanControl);
+        return {
+            absoluteMDE: absMDE,
+            relativeMDEPercent: relMDE * 100
+        };
     }
 
     // --- Date Helper Functions ---
@@ -329,6 +376,19 @@ document.addEventListener('DOMContentLoaded', () => {
         html += `<li>Control data originally parsed as: ${currentDetails.controlFullRange || 'N/A'}.</li>`;
         html += `<li>Experiment data originally parsed as: ${currentDetails.experimentFullRange || 'N/A'}.</li>`;
 
+        // Show skipped date rows if any
+        if ((currentDetails.controlSkippedDateRows > 0) || (currentDetails.experimentSkippedDateRows > 0)) {
+            html += `<li>${warningIcon} Note: ${currentDetails.controlSkippedDateRows || 0} rows in Control file and ${currentDetails.experimentSkippedDateRows || 0} rows in Experiment file were ignored due to unparseable or missing dates.</li>`;
+        }
+
+        // --- Session Imbalance Caveat ---
+        // Only show if both session counts are available and >0
+        const cSess = parseFloat(controlSessionsEl.textContent.replace(/[^0-9.-]+/g, ''));
+        const eSess = parseFloat(experimentSessionsEl.textContent.replace(/[^0-9.-]+/g, ''));
+        if (cSess && eSess && (cSess / eSess > 1.5 || cSess / eSess < 0.66)) {
+            html += `<li>${warningIcon} <strong>Session Imbalance:</strong> When session counts are highly imbalanced (e.g., more than a 50% difference), carefully consider if the user populations are truly comparable beyond the tested change. Such imbalances might hint at issues in test setup, traffic allocation, or an external factor disproportionately affecting one group. While session weighting is applied to mitigate statistical impact on rate metrics, the underlying population comparability remains a key consideration.</li>`;
+        }
+
         switch (currentScenario) {
             case 'IDEAL_OVERLAP':
                 html += `<li><strong style="color:green;">Ideal Scenario:</strong> Both datasets cover the identical period: <strong>${currentDetails.overlapStartDate} to ${currentDetails.overlapEndDate}</strong>. This is best for A/B testing.</li>`;
@@ -341,7 +401,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 break;
             case 'SEQUENTIAL_NO_OVERLAP':
-                html += `<li>${criticalIcon} <strong>CRITICAL WARNING: SEQUENTIAL COMPARISON!</strong></li>`;
+                html += `<li>${criticalIcon} <strong style="color:red;font-size:1.2em;">CRITICAL WARNING: SEQUENTIAL COMPARISON!</strong><br>
+                <strong>${currentDetails.message}</strong><br>
+                <strong style="color:red;">Statistical significance tests (p-values, confidence intervals) are <u>not meaningful</u> for sequential comparisons due to time-based confounding factors. Results are descriptive only.</strong></li>`;
                 html += `<li>The provided data for 'Control' and 'Experiment' <strong>do not overlap in time.</strong></li>`;
                 html += `<li>Any observed differences are highly likely to be influenced by time-based factors (e.g., day of week, seasonality, marketing campaigns, external events during their respective periods) rather than solely by the experimental change.</li>`;
                 html += `<li><strong>Results from this analysis CANNOT conclusively determine the causal impact of the experiment.</strong> They are descriptive of two different time periods. Interpret with extreme caution.</li>`;
@@ -390,8 +452,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     analysisModeSelect.addEventListener('change', () => {
         bootstrapOptionsDiv.style.display = analysisModeSelect.value === 'bootstrap' ? 'block' : 'none';
+        if (analysisModeSelect.value === 'ttest') {
+            powerOptionsDiv.style.display = '';
+        } else {
+            powerOptionsDiv.style.display = 'none';
+        }
     });
     bootstrapOptionsDiv.style.display = analysisModeSelect.value === 'bootstrap' ? 'block' : 'none';
+    // Initial state
+    if (analysisModeSelect.value === 'ttest') {
+        powerOptionsDiv.style.display = '';
+    } else {
+        powerOptionsDiv.style.display = 'none';
+    }
 
     // --- Core Functions ---
     function handleFileSelect() {
@@ -416,6 +489,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 originalControlDailyData = controlResult.dailyData;
                 originalExperimentDailyData = experimentResult.dailyData;
 
+                // Store skipped date row counts in analysisDetails
+                analysisDetails.controlSkippedDateRows = controlResult.skippedDateRows || 0;
+                analysisDetails.experimentSkippedDateRows = experimentResult.skippedDateRows || 0;
+
                 if (!originalControlDailyData || !originalControlDailyData.length ||
                     !originalExperimentDailyData || !originalExperimentDailyData.length) {
                     updateLoaderStatus('Error: One or both files lack valid daily data rows.');
@@ -430,7 +507,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 controlDailyData = strategyResult.processedControlData;
                 experimentDailyData = strategyResult.processedExperimentData;
                 analysisScenario = strategyResult.scenario;
-                analysisDetails = strategyResult.details;
+                analysisDetails = { ...analysisDetails, ...strategyResult.details };
 
                 displayAnalysisCaveats(analysisScenario, analysisDetails);
 
@@ -494,39 +571,48 @@ document.addEventListener('DOMContentLoaded', () => {
     function parseCSVFromFile(file) {
         return new Promise((resolve, reject) => {
             Papa.parse(file, {
-                header: true, skipEmptyLines: true, dynamicTyping: false, transformHeader: header => header.trim(),
+                header: true,
+                skipEmptyLines: true,
                 complete: results => {
-                    if (results.errors.length) return reject(new Error(`CSV parsing error in ${file.name}: ${results.errors[0].message}`));
-                    let data = results.data;
-                    let dailyData = [];
-                    // Accept both 'Offer Date' and 'Date' as the date column
-                    const dateKeyName = Object.keys(data[0] || {}).find(k => k.trim().toLowerCase() === 'offer date' || k.trim().toLowerCase() === 'date');
-                    if (!dateKeyName) {
-                        return reject(new Error(`No date column found in ${file.name}. Please ensure there is a column named 'Offer Date' or 'Date'. Supported formats: YYYY-MM-DD, YYYY/MM/DD, DD/MM/YYYY, MM/DD/YYYY.`));
-                    }
-                    // Remove summary row if present
-                    const lastRow = data[data.length - 1];
-                    const dateValLastRow = lastRow ? lastRow[dateKeyName] : null;
+                    if (results.errors.length) return reject("CSV parse error: " + results.errors[0].message);
+                    let rawData = results.data;
+                    let skippedDateRows = 0;
+
+                    // Remove summary row from rawData if necessary (existing logic)
+                    const lastRow = rawData[rawData.length - 1];
+                    const dateValLastRow = lastRow ? lastRow[getDateFromRow(lastRow)] : null;
                     if (dateValLastRow && (String(dateValLastRow).toLowerCase().includes('summary') || getDateFromRow(lastRow) === null)){
-                        data.pop();
+                        rawData.pop();
                     }
-                    dailyData = data.filter(row => {
-                        // Accept both 'Sessions' and warn if missing
+
+                    // Count rows skipped solely due to date issues
+                    rawData.forEach(row => {
+                        if (getDateFromRow(row) === null) {
+                            skippedDateRows++;
+                        }
+                    });
+
+                    // Now, filter for dailyData based on valid dates AND other criteria (like sessions)
+                    const dailyData = rawData.filter(row => {
+                        const offerDateVal = getDateFromRow(row);
+                        if (offerDateVal === null) return false; // Already counted
+
                         const sessionsKey = Object.keys(row).find(k => k.trim().toLowerCase() === 'sessions');
-                        if (!sessionsKey) return false; // Will warn below
+                        if (!sessionsKey) return false;
                         const sessionsValStr = row[sessionsKey];
                         if (sessionsValStr === null || String(sessionsValStr).trim() === '') return false;
                         const sessionsValNum = parseFloat(String(sessionsValStr).replace(/[^0-9.-]+/g, ''));
-                        const offerDateVal = getDateFromRow(row);
-                        return !isNaN(sessionsValNum) && offerDateVal !== null;
+                        return !isNaN(sessionsValNum); // offerDateVal is implicitly valid here
                     });
+
                     // Warn if 'Sessions' column is missing
-                    const hasSessions = Object.keys(data[0] || {}).some(k => k.trim().toLowerCase() === 'sessions');
+                    const hasSessions = results.data.length > 0 && Object.keys(results.data[0] || {}).some(k => k.trim().toLowerCase() === 'sessions');
                     if (!hasSessions) {
                         alert(`Warning: No 'Sessions' column found in ${file.name}. Some features and weighting will be unavailable. Results may be less accurate.`);
                     }
-                    resolve({ dailyData });
-                }, error: error => reject(error)
+                    resolve({ dailyData, skippedDateRows });
+                },
+                error: err => reject("CSV parse error: " + err.message)
             });
         });
     }
@@ -683,8 +769,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 let isSignificantFlag = false;
                 let finalLiftForDisplay = relativeChangePercent; // Default for t-test
 
-                // Only run t-test/bootstrap if enough data points
-                if (controlDailyData.length >= 2 && experimentDailyData.length >= 2) {
+                // --- SEQUENTIAL_NO_OVERLAP: No significance calculations ---
+                if (analysisScenario === 'SEQUENTIAL_NO_OVERLAP') {
+                    uncertaintyString = 'N/A (Sequential Data)';
+                    isSignificantFlag = false;
+                    // Do not push p-values for BH
+                } else if (controlDailyData.length >= 2 && experimentDailyData.length >= 2) {
                     if (mode === 'ttest') {
                         const controlDailyMetricValues = controlDailyData.map(row => parseValue(getCleanedValue(row, metricKey))).filter(v => v !== null && !isNaN(v));
                         const experimentDailyMetricValues = experimentDailyData.map(row => parseValue(getCleanedValue(row, metricKey))).filter(v => v !== null && !isNaN(v));
@@ -693,6 +783,35 @@ document.addEventListener('DOMContentLoaded', () => {
                             const ttestResult = calculateTTestConfidence(controlDailyMetricValues, experimentDailyMetricValues, alpha);
                             uncertaintyString = ttestResult.confidenceFormatted;
                             isSignificantFlag = ttestResult.isSignificant;
+
+                            // Ensure currentAlphaForTest is defined before MDE calculation
+                            const currentAlphaForTest = parseFloat(confidenceLevelSelect.value);
+                            const power = parseFloat(document.getElementById('desiredPower')?.value) || 0.8;
+                            const n1 = controlDailyMetricValues.length;
+                            const n2 = experimentDailyMetricValues.length;
+                            const var1 = window.jStat ? window.jStat.variance(controlDailyMetricValues, true) : 0;
+                            const var2 = window.jStat ? window.jStat.variance(experimentDailyMetricValues, true) : 0;
+                            const baselineMeanControl = ctrlOverallMetricVal;
+                            const mdeCalc = calculatePostHocMDE(currentAlphaForTest, power, n1, var1, n2, var2, baselineMeanControl);
+                            let mdeStringPart = "";
+                            if (mdeCalc && mdeCalc.relativeMDEPercent !== null) {
+                                mdeStringPart = ` (MDE: ±${mdeCalc.relativeMDEPercent.toFixed(1)}%)`;
+                            }
+                            uncertaintyString = ttestResult.confidenceFormatted + mdeStringPart;
+                        }
+                    } else if (mode === 'bayesian_beta_binomial') {
+                        // Bayesian Beta-Binomial logic
+                        const bayesResult = runBayesianBetaBinomial(controlDailyData, experimentDailyData, metricKey, alpha);
+                        if (bayesResult.type === 'rate') {
+                            uncertaintyString = `P(Exp>Ctrl): ${(bayesResult.probExpBetter * 100).toFixed(1)}%. Lift CI: [` +
+                                `${(bayesResult.credibleIntervalLower * 100).toFixed(1)}%, ${(bayesResult.credibleIntervalUpper * 100).toFixed(1)}%]`;
+                            // Strong evidence if probability is outside the central alpha region
+                            isSignificantFlag = (bayesResult.probExpBetter > (1 - alpha / 2)) || (bayesResult.probExpBetter < (alpha / 2));
+                            finalLiftForDisplay = bayesResult.medianLift * 100;
+                        } else {
+                            uncertaintyString = "N/A (Bayesian Beta-Binomial only for rates)";
+                            isSignificantFlag = false;
+                            finalLiftForDisplay = relativeChangePercent;
                         }
                     } else { // Bootstrap mode
                         updateLoaderStatus(`Running bootstrap for "${metricKey}"...`);
@@ -702,19 +821,17 @@ document.addEventListener('DOMContentLoaded', () => {
                         const upperCI = bootstrapResult.upperBound * 100;
                         uncertaintyString = `CI: (${lowerCI >= 0 ? '+' : ''}${lowerCI.toFixed(2)}%, ${upperCI >= 0 ? '+' : ''}${upperCI.toFixed(2)}%)`;
                         isSignificantFlag = bootstrapResult.significant;
-                        pValuesForBH.push(bootstrapResult.significant ? alpha / (10 * iterations) : 1.0); // Heuristic p-value for B-H
-                        resultIndicesForBH.push(allResults.length);
+                        pValuesForBH.push(bootstrapResult.pValue);
                     }
                 }
 
 
                 let icon = '';
                 const metricKeyLower = metricKey.toLowerCase().trim();
-                const negativeIsGoodMetrics = ['bounce rate', 'cart abandonment', 'exit rate'];
                 const liftForIcon = finalLiftForDisplay; // Use bootstrap lift if available, else point estimate lift
 
                 if (liftForIcon !== null && !isNaN(liftForIcon) && isFinite(liftForIcon)) {
-                    if (negativeIsGoodMetrics.includes(metricKeyLower)) {
+                    if (NEGATIVE_IS_GOOD_METRICS.includes(metricKeyLower)) {
                         if (liftForIcon < 0) icon = '<span class="significant-icon lift-up">▼</span>';
                         else if (liftForIcon > 0) icon = '<span class="significant-icon lift-down">▲</span>';
                         else icon = '<span class="significant-icon" style="font-weight:1000;color: goldenrod;">–</span>';
@@ -758,6 +875,11 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // Fix: Use correct ID for analysis mode select
+        const analysisMode = document.getElementById('analysisMode');
+        const isBayesian = analysisMode && analysisMode.value === 'bayesian_beta_binomial';
+        const alpha = parseFloat(document.getElementById('confidenceLevelSelect')?.value) || 0.05;
+
         resultsData.sort((a, b) => {
             if (a.isSignificant !== b.isSignificant) return b.isSignificant - a.isSignificant;
             if (a.isSignificant) {
@@ -766,9 +888,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const negativeIsGoodMetrics = ['bounce rate', 'cart abandonment', 'exit rate'];
                 const aIsNegativeGood = negativeIsGoodMetrics.includes(metricALower);
                 const bIsNegativeGood = negativeIsGoodMetrics.includes(metricBLower);
-                const liftA = a.relativeChangePercent; // Use the displayed lift
+                const liftA = a.relativeChangePercent;
                 const liftB = b.relativeChangePercent;
-
                 if (aIsNegativeGood && liftA < 0 && (!bIsNegativeGood || liftB >= 0)) return -1;
                 if (bIsNegativeGood && liftB < 0 && (!aIsNegativeGood || liftA >= 0)) return 1;
                 if (!aIsNegativeGood && liftA > 0 && (bIsNegativeGood || liftB <= 0)) return -1;
@@ -781,12 +902,43 @@ document.addEventListener('DOMContentLoaded', () => {
             const row = document.createElement('tr');
             const isGoal = res.metric === selectedGoal;
             row.className = isGoal ? 'highlight-goal' : '';
-            let significanceDisplay = res.isSignificant ? `Yes (${((1 - parseFloat(confidenceLevelSelect.value)) * 100).toFixed(0)}%)` : 'No';
-             if (res.uncertaintyString === "N/A (Insufficient Data)") {
-                significanceDisplay = "N/A";
+
+            // Only show the metric star if not sequential data and not insufficient data
+            let metricStar = '';
+            if (res.isSignificant && res.uncertaintyString !== "N/A (Insufficient Data)" && res.uncertaintyString !== "N/A (Sequential Data)") {
+                metricStar = ' <span class="metric-star" title="Statistically Significant">⭐</span>';
             }
 
+            // --- Evidence/Significance column logic ---
+            let significanceDisplay = res.isSignificant ? `Yes (${((1 - parseFloat(confidenceLevelSelect.value)) * 100).toFixed(0)}%)` : 'No';
+            if (res.uncertaintyString === "N/A (Insufficient Data)") {
+                significanceDisplay = "N/A";
+            }
+            if (res.uncertaintyString === "N/A (Sequential Data)") {
+                significanceDisplay = "N/A (Sequential)";
+            }
+            // Bayesian mode: show evidence wording and probability if available
+            if (isBayesian) {
+                // Try to extract P(Exp>Ctrl) from the uncertainty string if present
+                let probExpBetter = null;
+                if (res.uncertaintyString && res.uncertaintyString.includes('P(Exp>Ctrl):')) {
+                    const match = res.uncertaintyString.match(/P\(Exp>Ctrl\): ([\d.]+)%/);
+                    if (match && match[1]) {
+                        probExpBetter = parseFloat(match[1]);
+                    }
+                }
+                if (probExpBetter !== null) {
+                    if (res.isSignificant) {
+                        significanceDisplay = `Likely Better (P>Ctrl ${probExpBetter.toFixed(0)}%)`;
+                    } else {
+                        significanceDisplay = `Unclear (P>Ctrl ${probExpBetter.toFixed(0)}%)`;
+                    }
+                } else {
+                    significanceDisplay = res.isSignificant ? 'Likely Better' : 'Unclear';
+                }
+            }
 
+            // BUG FIX: Use res.absoluteChange, not ctrlOverallMetricVal, for absolute change display
             const formattedAbsChange = formatAbsoluteChangeForDisplay(res.metric, res.absoluteChange);
             let formattedRelChange = "N/A";
             if (res.relativeChangePercent !== null && !isNaN(res.relativeChangePercent) && isFinite(res.relativeChangePercent)) {
@@ -795,9 +947,8 @@ document.addEventListener('DOMContentLoaded', () => {
                  formattedRelChange = `0.00% ${res.icon}`;
             }
 
-
             row.innerHTML = `
-              <td>${res.metric}${res.isSignificant && res.uncertaintyString !== "N/A (Insufficient Data)" ? ' <span class="metric-star" title="Statistically Significant">⭐</span>' : ''}</td>
+              <td>${res.metric}${metricStar}</td>
               <td>${res.controlValFormatted}</td>
               <td>${res.experimentValFormatted}</td>
               <td>${formattedAbsChange}</td>
@@ -900,10 +1051,28 @@ function generateAndDisplayInsights(results, scenario, details, goalMetricName, 
         const absChangeFormatted = formatAbsoluteChangeForDisplay(metricName, goalResult.absoluteChange); // Assuming this is available
         const isSig = goalResult.isSignificant;
         const uncertainty = goalResult.uncertaintyString;
-        const isNegativeGood = ['bounce rate', 'cart abandonment', 'exit rate'].includes(metricName.toLowerCase().trim());
+        const isBayesian = document.getElementById('analysisModeSelect')?.value === 'bayesian_beta_binomial';
+
+        // --- Bayesian-specific insight ---
+        if (isBayesian && uncertainty && uncertainty.includes('P(Exp>Ctrl):')) {
+            // Extract P(Exp>Ctrl) and credible interval
+            let probExpBetter = null, ciLower = null, ciUpper = null;
+            const probMatch = uncertainty.match(/P\(Exp>Ctrl\): ([\d.]+)%/);
+            if (probMatch && probMatch[1]) probExpBetter = parseFloat(probMatch[1]);
+            const ciMatch = uncertainty.match(/Lift CI: \[([\d.\-]+)%, ([\d.\-]+)%\]/);
+            if (ciMatch && ciMatch[1] && ciMatch[2]) {
+                ciLower = parseFloat(ciMatch[1]);
+                ciUpper = parseFloat(ciMatch[2]);
+            }
+            insightsHtml += `<li>Bayesian analysis for <strong>${metricName}</strong> suggests a <strong>${probExpBetter !== null ? probExpBetter.toFixed(1) : '?'}%</strong> probability that the Experiment outperforms Control.<br>
+            The estimated lift is likely between <strong>${ciLower !== null ? ciLower.toFixed(1) : '?'}%</strong> and <strong>${ciUpper !== null ? ciUpper.toFixed(1) : '?'}%</strong> (at ${(100 - alpha * 100).toFixed(0)}% credibility).</li>`;
+            generatedInsightCount++;
+        }
 
         if (isSig) {
             let liftDirection = relChange > 0 ? "increase" : "decrease";
+            const metricNameLower = metricName.toLowerCase().trim();
+            const isNegativeGood = NEGATIVE_IS_GOOD_METRICS.includes(metricNameLower); // Use the constant
             let impact = (isNegativeGood && relChange < 0) || (!isNegativeGood && relChange > 0) ? "positive" : "negative";
             let absRelDesc = `${absChangeFormatted} (a ${Math.abs(relChange).toFixed(2)}% relative ${liftDirection})`;
 
@@ -912,16 +1081,26 @@ function generateAndDisplayInsights(results, scenario, details, goalMetricName, 
                              The uncertainty is ${uncertainty}.</li>`;
             generatedInsightCount++;
 
-            if (impact === "positive" && Math.abs(relChange) < 5) { // Example threshold for small significant lift
+            if (impact === "positive" && Math.abs(relChange) < 5) // Example threshold for small significant lift
                 insightsHtml += `<li style="color: darkgoldenrod;">While significant, the change in ${metricName} (${Math.abs(relChange).toFixed(2)}%) is relatively small. Evaluate if this magnitude of change meets business objectives.</li>`;
-                generatedInsightCount++;
-            }
-
+            generatedInsightCount++;
         } else {
             insightsHtml += `<li>The change observed for your primary goal, <strong>${metricName}</strong>, was <strong>not statistically significant</strong> at the ${confidencePctString} confidence level.
                              The data suggests the experiment did not produce a reliably detectable effect on this metric (Uncertainty: ${uncertainty}).
                              This could mean there's no true difference, or the test lacked sufficient power to detect it.</li>`;
             generatedInsightCount++;
+
+            // --- MDE/Power Explanation for Non-Significant Result (T-Test Mode) ---
+            // Try to extract MDE from the uncertainty string (e.g., "(MDE: ±5.5%)")
+            let mdeMatch = uncertainty && uncertainty.match(/MDE: ±([\d.]+)%/);
+            let mdeValue = mdeMatch ? parseFloat(mdeMatch[1]) : null;
+            let powerValue = parseFloat(document.getElementById('desiredPower')?.value) || 0.8;
+            if (mdeValue !== null && !isNaN(mdeValue)) {
+                insightsHtml += `<li>For <strong>${metricName}</strong>, the observed difference was not statistically significant.<br>
+                This test had approximately <strong>${(powerValue * 100).toFixed(0)}%</strong> power to detect a relative change of at least <strong>${mdeValue.toFixed(1)}%</strong>.<br>
+                The true effect, if any, might be smaller than this, or the test may have been underpowered.</li>`;
+                generatedInsightCount++;
+            }
         }
     } else if (goalMetricName) {
         insightsHtml += `<li>Your selected goal metric "${goalMetricName}" was not found in the processed results. Please check the metric name or file contents.</li>`;
@@ -962,6 +1141,10 @@ function generateAndDisplayInsights(results, scenario, details, goalMetricName, 
     }
 
 
+    // --- General Concluding Remark ---
+    insightsHtml += `<li style="margin-top: 10px; font-style: italic; color: #444;">If results are inconclusive (e.g., not statistically significant, MDE is high, or Bayesian P(Exp > Ctrl) is near 50%), consider if the test duration was sufficient, if the change implemented was too subtle, or if there's high variability in the data.</li>`;
+
+
     // --- Concluding Remark ---
     if (generatedInsightCount === 0) {
         insightsHtml += `<li>No specific automated insights generated. Please review the table data and caveats carefully.</li>`;
@@ -977,5 +1160,77 @@ function generateAndDisplayInsights(results, scenario, details, goalMetricName, 
     if (generatedInsightCount > 0) {
         insightsEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
+}
+
+// Bayesian analysis function
+function runBayesianBetaBinomial(controlDailyDataForMetric, experimentDailyDataForMetric, metricKey, alphaCredibleInterval = 0.05) {
+    // Helper to check if metric is likely a rate
+    const isLikelyRateMetric = (mKey, sampleValue) => {
+        const mKeyLower = mKey.toLowerCase();
+        if (mKeyLower.includes("rate") || mKeyLower.includes("conversion")) return true;
+        if (typeof sampleValue === 'number' && sampleValue >= 0 && sampleValue <= 1.0001) return true;
+        return false;
+    };
+    let sampleCtrlVal, sampleExpVal;
+    if (controlDailyDataForMetric.length > 0) sampleCtrlVal = parseValue(getCleanedValue(controlDailyDataForMetric[0], metricKey));
+    if (experimentDailyDataForMetric.length > 0) sampleExpVal = parseValue(getCleanedValue(experimentDailyDataForMetric[0], metricKey));
+    if (!isLikelyRateMetric(metricKey, sampleCtrlVal) && !isLikelyRateMetric(metricKey, sampleExpVal)) {
+        return { type: 'not_rate', probExpBetter: null, medianLift: null, credibleIntervalLower: null, credibleIntervalUpper: null, message: "Metric not identified as a rate for Beta-Binomial." };
+    }
+    let totalControlConversions = 0, totalControlSessions = 0;
+    controlDailyDataForMetric.forEach(row => {
+        const sessions = parseValue(getCleanedValue(row, 'Sessions'));
+        const metricVal = parseValue(getCleanedValue(row, metricKey));
+        if (sessions > 0 && metricVal !== null && !isNaN(metricVal)) {
+            totalControlConversions += metricVal * sessions;
+            totalControlSessions += sessions;
+        }
+    });
+    let totalExperimentConversions = 0, totalExperimentSessions = 0;
+    experimentDailyDataForMetric.forEach(row => {
+        const sessions = parseValue(getCleanedValue(row, 'Sessions'));
+        const metricVal = parseValue(getCleanedValue(row, metricKey));
+        if (sessions > 0 && metricVal !== null && !isNaN(metricVal)) {
+            totalExperimentConversions += metricVal * sessions;
+            totalExperimentSessions += sessions;
+        }
+    });
+    if (totalControlSessions === 0 || totalExperimentSessions === 0) {
+        return { type: 'rate', probExpBetter: null, medianLift: null, credibleIntervalLower: null, credibleIntervalUpper: null, message: "No sessions or conversions for Bayesian analysis." };
+    }
+    const priorAlpha = 1, priorBeta = 1;
+    const alpha_c_post = priorAlpha + totalControlConversions;
+    const beta_c_post = priorBeta + totalControlSessions - totalControlConversions;
+    const alpha_e_post = priorAlpha + totalExperimentConversions;
+    const beta_e_post = priorBeta + totalExperimentSessions - totalExperimentConversions;
+    const numSamples = 10000;
+    const ctrlSamples = [];
+    const expSamples = [];
+    for (let i = 0; i < numSamples; i++) {
+        ctrlSamples.push(jStat.beta.sample(alpha_c_post, beta_c_post));
+        expSamples.push(jStat.beta.sample(alpha_e_post, beta_e_post));
+    }
+    let expBetterCount = 0;
+    const liftSamples = [];
+    for (let i = 0; i < numSamples; i++) {
+        if (expSamples[i] > ctrlSamples[i]) expBetterCount++;
+        // Avoid division by zero
+        if (ctrlSamples[i] > 0) {
+            liftSamples.push((expSamples[i] - ctrlSamples[i]) / ctrlSamples[i]);
+        } else {
+            liftSamples.push(0);
+        }
+    }
+    liftSamples.sort((a, b) => a - b);
+    const lowerIdx = Math.floor((alphaCredibleInterval / 2) * numSamples);
+    const upperIdx = Math.floor((1 - alphaCredibleInterval / 2) * numSamples) - 1;
+    const medianIdx = Math.floor(numSamples / 2);
+    return {
+        type: 'rate',
+        probExpBetter: expBetterCount / numSamples,
+        medianLift: liftSamples[medianIdx],
+        credibleIntervalLower: liftSamples[lowerIdx],
+        credibleIntervalUpper: liftSamples[upperIdx]
+    };
 }
 });
