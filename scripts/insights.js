@@ -7,6 +7,12 @@ function generateAndDisplayInsights(results, scenario, details, goalMetricName, 
         return;
     }
 
+    // Function to dynamically detect if a metric is "negative is good" (lower values are better)
+    function isNegativeGoodMetric(metricName) {
+        const name = metricName.toLowerCase().trim();
+        return name.includes('bounce') || name.includes('abandon');
+    }
+
     let insightsHtml = '<h4>Key Observations & Potential Insights:</h4><ul style="list-style-type: disc; padding-left: 20px;">';
     let generatedInsightCount = 0;
 
@@ -72,12 +78,10 @@ function generateAndDisplayInsights(results, scenario, details, goalMetricName, 
             insightsHtml += `<li>Bayesian analysis for <strong>${metricName}</strong> suggests a <strong>${probExpBetter !== null ? probExpBetter.toFixed(1) : '?'}%</strong> probability that the Experiment outperforms Control.<br>
             The estimated lift is likely between <strong>${ciLower !== null ? ciLower.toFixed(1) : '?'}%</strong> and <strong>${ciUpper !== null ? ciUpper.toFixed(1) : '?'}%</strong> (at 95% credibility).</li>`;
             generatedInsightCount++;
-        }
-
-        if (isSig) {
+        }        if (isSig) {
             let liftDirection = relChange > 0 ? "increase" : "decrease";
             const metricNameLower = metricName.toLowerCase().trim();
-            const isNegativeGood = NEGATIVE_IS_GOOD_METRICS.includes(metricNameLower); // Use the constant
+            const isNegativeGood = isNegativeGoodMetric(metricName);
             let impact = (isNegativeGood && relChange < 0) || (!isNegativeGood && relChange > 0) ? "positive" : "negative";
             let absRelDesc = `${absChangeFormatted} (a ${Math.abs(relChange).toFixed(2)}% relative ${liftDirection})`;
 
@@ -111,8 +115,6 @@ function generateAndDisplayInsights(results, scenario, details, goalMetricName, 
         insightsHtml += `<li>Your selected goal metric "${goalMetricName}" was not found in the processed results. Please check the metric name or file contents.</li>`;
         generatedInsightCount++;
     }
-
-
     // --- General Significant Metric Insights ---
     const otherSignificantResults = results.filter(r => r.isSignificant && r.metric !== goalMetricName);
     if (otherSignificantResults.length > 0) {
@@ -121,22 +123,20 @@ function generateAndDisplayInsights(results, scenario, details, goalMetricName, 
         otherSignificantResults.slice(0, 3).forEach(res => { // Show top 3
             const metricName = res.metric;
             const relChange = res.relativeChangePercent;
-            const isNegativeGood = ['bounce rate', 'cart abandonment', 'exit rate'].includes(metricName.toLowerCase().trim());
+            const isNegativeGood = isNegativeGoodMetric(metricName);
             let impact = (isNegativeGood && relChange < 0) || (!isNegativeGood && relChange > 0) ? "positive" : "negative";
             let liftDirection = relChange > 0 ? "increase" : "decrease";
             insightsHtml += `<li><strong>${metricName}</strong> saw a significant ${impact} ${liftDirection} of ${Math.abs(relChange).toFixed(2)}%.</li>`;
         });
         insightsHtml += `</ul></li>`;
         generatedInsightCount++;
-    }
-
-    // --- Conflicting Signals (Example) ---
-    if (goalResult && goalResult.isSignificant && ((!['bounce rate', 'cart abandonment', 'exit rate'].includes(goalResult.metric.toLowerCase().trim()) && goalResult.relativeChangePercent > 0) || (['bounce rate', 'cart abandonment', 'exit rate'].includes(goalResult.metric.toLowerCase().trim()) && goalResult.relativeChangePercent < 0) )) { // Goal was positive
+    }    // --- Conflicting Signals (Example) ---
+    if (goalResult && goalResult.isSignificant && ((!isNegativeGoodMetric(goalResult.metric) && goalResult.relativeChangePercent > 0) || (isNegativeGoodMetric(goalResult.metric) && goalResult.relativeChangePercent < 0) )) { // Goal was positive
         const conflictingBadMetric = results.find(r =>
             r.isSignificant &&
             r.metric !== goalMetricName &&
-            ( (['bounce rate', 'cart abandonment', 'exit rate'].includes(r.metric.toLowerCase().trim()) && r.relativeChangePercent > 0) || // Bad metric increased
-              (!['bounce rate', 'cart abandonment', 'exit rate'].includes(r.metric.toLowerCase().trim()) && r.relativeChangePercent < 0 && r.metric.toLowerCase().includes("revenue")) // e.g. Revenue decreased
+            ( (isNegativeGoodMetric(r.metric) && r.relativeChangePercent > 0) || // Bad metric increased (bounce/abandon went up)
+              (!isNegativeGoodMetric(r.metric) && r.relativeChangePercent < 0 && r.metric.toLowerCase().includes("revenue")) // e.g. Revenue decreased
             )
         );
         if (conflictingBadMetric) {

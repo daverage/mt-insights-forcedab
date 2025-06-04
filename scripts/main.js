@@ -1,4 +1,9 @@
-const NEGATIVE_IS_GOOD_METRICS = ['bounce rate', 'cart abandonment', 'exit rate'];
+// Function to dynamically detect if a metric is "negative is good" (lower values are better)
+function isNegativeGoodMetric(metricName) {
+    const name = metricName.toLowerCase().trim();
+    return name.includes('bounce') || name.includes('abandon');
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     let controlDailyData = null;
     let experimentDailyData = null;
@@ -69,11 +74,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 parseCSVFromFile(controlFile),
                 parseCSVFromFile(experimentFile)
             ]).then(([controlResult, experimentResult]) => {
+                // Defensive check for parse errors or missing data
+                if (!controlResult || !Array.isArray(controlResult.dailyData) || !experimentResult || !Array.isArray(experimentResult.dailyData)) {
+                    throw new Error('One or both files could not be parsed or are missing valid daily data rows.');
+                }
                 originalControlDailyData = controlResult.dailyData;
                 originalExperimentDailyData = experimentResult.dailyData;
                 analysisDetails.controlSkippedDateRows = controlResult.skippedDateRows || 0;
-                analysisDetails.experimentSkippedDateRows = experimentResult.skippedDateRows || 0;
-                const strategyResult = determineAnalysisStrategyAndPrepareData(originalControlDailyData, originalExperimentDailyData);
+                analysisDetails.experimentSkippedDateRows = experimentResult.skippedDateRows || 0;                let strategyResult;
+                try {
+                    strategyResult = determineAnalysisStrategyAndPrepareData(originalControlDailyData, originalExperimentDailyData);
+                    console.log('DEBUG: strategyResult from determineAnalysisStrategyAndPrepareData:', strategyResult);
+                } catch (error) {
+                    console.error('ERROR: Exception in determineAnalysisStrategyAndPrepareData:', error, error.stack);
+                    throw new Error('Failed to determine analysis strategy due to exception: ' + error.message);
+                }
+                
+                if (!strategyResult) {
+                    console.error('ERROR: strategyResult is null or undefined');
+                    throw new Error('Failed to determine analysis strategy - strategyResult is null or undefined');
+                }
+                
                 analysisScenario = strategyResult.scenario;
                 analysisDetails = { ...analysisDetails, ...strategyResult.details };
                 displayAnalysisCaveats(analysisScenario, analysisDetails, 'smartAB');
@@ -86,7 +107,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (strategyResult.processedControlData.length && strategyResult.processedExperimentData.length) {
                     const expKeys = Object.keys(strategyResult.processedExperimentData[0]).map(k=>k.trim().toLowerCase());
                     metricHeaders = Object.keys(strategyResult.processedControlData[0])
-                        .filter(k=>expKeys.includes(k.trim().toLowerCase()) && !['offer date','sessions'].includes(k.trim().toLowerCase()));
+                        .filter(k=>expKeys.includes(k.trim().toLowerCase()) && !['offer date','sessions'].includes(k.trim().toLowerCase()))
+                        .map(k => k.trim()); // TRIM the actual header names to remove trailing spaces
                 }
                 if (metricHeaders.length) {
                     populateGoalDropdown(metricHeaders);
@@ -99,23 +121,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 setTimeout(hideLoader, 1500);
             }).catch(err=>{
+                // Debugging: log error and stack
+                console.error('Error processing files:', err, err && err.stack);
                 updateLoaderStatus(`Error processing files: ${err}`);
-                displayAnalysisCaveats('FILE_PARSE_ERROR',{message:err.toString()});
+                displayAnalysisCaveats('FILE_PARSE_ERROR',{message:err && err.toString ? err.toString() : String(err)});
                 setTimeout(hideLoader, 3000);
             });
         } else {
             hideLoader();
         }
-    }
-
-    function populateGoalDropdown(metrics) {
-        goalDropdown.innerHTML = ''; // Clear existing options
+    }    function populateGoalDropdown(metrics) {
+        goalDropdown.innerHTML = '<option value="">-- Select Goal --</option>';
         metrics.forEach(metric => {
             const option = document.createElement('option');
             option.value = metric;
             option.textContent = metric;
             goalDropdown.appendChild(option);
         });
+        goalDropdown.disabled = false;
+        if (metrics.length > 0) {
+            selectedGoal = metrics[0];
+            goalDropdown.value = selectedGoal;
+        }
     }
 
     function scrollToExportButton() {
@@ -154,16 +181,18 @@ async function runAnalysisAsync() {
         // --- Smart A/B Analysis logic STARTS HERE ---
         const allResults = [];
         const pValuesForBH = [];
-        const resultIndicesForBH = [];
-        const useSessionWeightingForPointEstimates = document.getElementById('useSessionWeighting').checked;
+        const resultIndicesForBH = [];        const useSessionWeightingForPointEstimates = document.getElementById('useSessionWeighting').checked;
+        
         const controlSummaryOverall = calculateSummaryRow(controlDataForCurrentAnalysis, metricHeaders, useSessionWeightingForPointEstimates);
         const experimentSummaryOverall = calculateSummaryRow(experimentDataForCurrentAnalysis, metricHeaders, useSessionWeightingForPointEstimates);
-        for (let i = 0; i < metricHeaders.length; i++) {
-            const metricKey = metricHeaders[i];
+        
+        for (let i = 0; i < metricHeaders.length; i++) {            const metricKey = metricHeaders[i];
             updateLoaderStatus(`Smart A/B Analysis for "${metricKey}"... (${i+1}/${metricHeaders.length})`); // Progress update
+            
             // Point estimates
             const ctrlOverallMetricVal = controlSummaryOverall[metricKey];
             const expOverallMetricVal = experimentSummaryOverall[metricKey];
+            
             let absoluteChange = null;
             if (ctrlOverallMetricVal !== null && expOverallMetricVal !== null) {
                 absoluteChange = expOverallMetricVal - ctrlOverallMetricVal;
@@ -197,11 +226,10 @@ async function runAnalysisAsync() {
             }
             
             let an_bayesianResult = runBayesianBetaBinomial(controlDataForCurrentAnalysis, experimentDataForCurrentAnalysis, metricKey, alpha);
-            
-            let an_ttestResult = null;
+              let an_ttestResult = null;
             let an_mdeValue = null;
-            const controlVals = controlDataForCurrentAnalysis.map(row => parseValue(getCleanedValue(row, metricKey))).filter(v => v !== null && !isNaN(v));
-            const experimentVals = experimentDataForCurrentAnalysis.map(row => parseValue(getCleanedValue(row, metricKey))).filter(v => v !== null && !isNaN(v));
+            const controlVals = controlDataForCurrentAnalysis.map(row => parseMetricValue(getCleanedValue(row, metricKey))).filter(v => v !== null && !isNaN(v));
+            const experimentVals = experimentDataForCurrentAnalysis.map(row => parseMetricValue(getCleanedValue(row, metricKey))).filter(v => v !== null && !isNaN(v));
             if (controlVals.length >= 2 && experimentVals.length >= 2) {
                 an_ttestResult = calculateTTestConfidence(controlVals, experimentVals, alpha);
                 const power = 0.8;
@@ -214,9 +242,7 @@ async function runAnalysisAsync() {
                 if (mdeCalc && mdeCalc.relativeMDEPercent !== null) {
                     an_mdeValue = mdeCalc.relativeMDEPercent;
                 }
-            }
-
-            allResults.push({
+            }            allResults.push({
                 metric: metricKey,
                 controlValFormatted: formatValueForDisplay(metricKey, ctrlOverallMetricVal),
                 experimentValFormatted: formatValueForDisplay(metricKey, expOverallMetricVal),
@@ -231,9 +257,9 @@ async function runAnalysisAsync() {
                 _ttestResult: an_ttestResult,
                 _mdeValue: an_mdeValue,
                 _bayesianResult: an_bayesianResult,
-                _basicModeUsed: 'smartAB_derived' // Or a more descriptive flag for Smart A/B
+                analysisScenario: currentScenario // <-- Add scenario context for UI
             });
-            // Yield to UI for responsiveness
+              // Yield to UI for responsiveness
             if (i % 1 === 0) await new Promise(r => setTimeout(r, 0));
         }
         
@@ -249,34 +275,41 @@ async function runAnalysisAsync() {
         
         runButton.dataset.results = JSON.stringify(allResults);
         displayMetrics(allResults);
+        // Debugging: Log allResults to check for analysisScenario property
+        console.log('DEBUG: allResults', allResults);
+        // Also log each result's analysisScenario for clarity
+        allResults.forEach((r, idx) => {
+            console.log(`DEBUG: result[${idx}].analysisScenario =`, r.analysisScenario);
+        });
         if (allResults.length > 0) {
             exportButton.style.display = 'inline-block';
             generateAndDisplayInsights(allResults, currentScenario, currentDetailsForChart, selectedGoal, currentAnalysisMode);
-            scrollToExportButton();
-            // >>>>>>>>>>>> CALL CHART DISPLAY HERE FOR SMART A/B <<<<<<<<<<<<<<<
+            scrollToExportButton();            // >>>>>>>>>>>> CALL CHART DISPLAY HERE FOR SMART A/B <<<<<<<<<<<<<<<
             window.showGoalMetricTrendChart(
                 currentAnalysisMode,
                 selectedGoal,
                 controlDataForCurrentAnalysis,
                 experimentDataForCurrentAnalysis,
-                currentDetailsForChart
+                currentDetailsForChart,
+                currentScenario
             );
         } else {
             if (document.getElementById('goalMetricChartContainer')) {
                 document.getElementById('goalMetricChartContainer').style.display = 'none';
             }
-        }
-    } else if (currentAnalysisMode === 'quickCompare') {
+        }    } else if (currentAnalysisMode === 'quickCompare') {
         controlDataForCurrentAnalysis = originalControlDailyData;
         experimentDataForCurrentAnalysis = originalExperimentDailyData;
         currentScenario = analysisScenario;
         currentDetailsForChart = analysisDetails;
-        // ...Quick Compare analysis logic...
+        
+        // Quick Compare analysis logic
         const useWeightingQuickCompare = quickCompareWeightingCheckbox ? quickCompareWeightingCheckbox.checked : false;
         const allResults = [];
+        
         for (let i = 0; i < metricHeaders.length; i++) {
             const metricKey = metricHeaders[i];
-            updateLoaderStatus(`Quick Compare for "${metricKey}"... (${i+1}/${metricHeaders.length})`); // Progress update
+            updateLoaderStatus(`Quick Compare for "${metricKey}"... (${i+1}/${metricHeaders.length})`); // Progress update            
             
             const ctrlOverallMetricVal = calculateSummaryRow(controlDataForCurrentAnalysis, [metricKey], useWeightingQuickCompare)[metricKey];
             const expOverallMetricVal = calculateSummaryRow(experimentDataForCurrentAnalysis, [metricKey], useWeightingQuickCompare)[metricKey];
@@ -297,11 +330,10 @@ async function runAnalysisAsync() {
             const finalLiftForDisplay = relativeChangePercent;
             const uncertaintyString = 'N/A (Descriptive Comparison)';
             const isSignificantFlag = false; // Significance is not applicable
-            
-            let icon = '';
+              let icon = '';
             if (finalLiftForDisplay !== null && !isNaN(finalLiftForDisplay) && isFinite(finalLiftForDisplay)) {
                 const metricKeyLower = metricKey.toLowerCase().trim();
-                if (NEGATIVE_IS_GOOD_METRICS.includes(metricKeyLower)) {
+                if (isNegativeGoodMetric(metricKey)) {
                     if (finalLiftForDisplay < 0) icon = '<span class="significant-icon lift-up">▼</span>';
                     else if (finalLiftForDisplay > 0) icon = '<span class="significant-icon lift-down">▲</span>';
                     else icon = '<span class="significant-icon" style="font-weight:1000;color: goldenrod;">–</span>';
@@ -327,7 +359,8 @@ async function runAnalysisAsync() {
                 _bootstrapResult: null,
                 _ttestResult: null,
                 _mdeValue: null,
-                _bayesianResult: null
+                _bayesianResult: null,
+                analysisScenario: currentScenario // <-- Add scenario context for UI
             });
             // Yield to UI for responsiveness
             if (i % 1 === 0) await new Promise(r => setTimeout(r, 0));
@@ -335,17 +368,23 @@ async function runAnalysisAsync() {
         
         runButton.dataset.results = JSON.stringify(allResults);
         displayMetrics(allResults);
+        // Debugging: Log allResults to check for analysisScenario property
+        console.log('DEBUG: allResults', allResults);
+        // Also log each result's analysisScenario for clarity
+        allResults.forEach((r, idx) => {
+            console.log(`DEBUG: result[${idx}].analysisScenario =`, r.analysisScenario);
+        });
         if (allResults.length > 0) {
             exportButton.style.display = 'inline-block';
             generateAndDisplayInsights(allResults, currentScenario, currentDetailsForChart, selectedGoal, currentAnalysisMode);
-            scrollToExportButton();
-            // >>>>>>>>>>>> CALL CHART DISPLAY HERE FOR QUICK COMPARE <<<<<<<<<<<<<<<
+            scrollToExportButton();            // >>>>>>>>>>>> CALL CHART DISPLAY HERE FOR QUICK COMPARE <<<<<<<<<<<<<<<
             window.showGoalMetricTrendChart(
                 currentAnalysisMode,
                 selectedGoal,
                 originalControlDailyData,
                 originalExperimentDailyData,
-                currentDetailsForChart
+                currentDetailsForChart,
+                currentScenario
             );
         } else {
             if (document.getElementById('goalMetricChartContainer')) {

@@ -7,15 +7,15 @@ const isLikelyRateMetric = (mKey, sampleValue) => {
     return false;
 };
 let sampleCtrlVal, sampleExpVal;
-if (controlDailyDataForMetric.length > 0) sampleCtrlVal = parseValue(getCleanedValue(controlDailyDataForMetric[0], metricKey));
-if (experimentDailyDataForMetric.length > 0) sampleExpVal = parseValue(getCleanedValue(experimentDailyDataForMetric[0], metricKey));
+if (controlDailyDataForMetric.length > 0) sampleCtrlVal = parseMetricValue(getCleanedValue(controlDailyDataForMetric[0], metricKey));
+if (experimentDailyDataForMetric.length > 0) sampleExpVal = parseMetricValue(getCleanedValue(experimentDailyDataForMetric[0], metricKey));
 if (!isLikelyRateMetric(metricKey, sampleCtrlVal) && !isLikelyRateMetric(metricKey, sampleExpVal)) {
     return { type: 'not_rate', probExpBetter: null, medianLift: null, credibleIntervalLower: null, credibleIntervalUpper: null, message: "Metric not identified as a rate for Beta-Binomial." };
 }
 let totalControlConversions = 0, totalControlSessions = 0;
 controlDailyDataForMetric.forEach(row => {
     const sessions = parseValue(getCleanedValue(row, 'Sessions'));
-    const metricVal = parseValue(getCleanedValue(row, metricKey));
+    const metricVal = parseMetricValue(getCleanedValue(row, metricKey));
     if (sessions > 0 && metricVal !== null && !isNaN(metricVal)) {
         totalControlConversions += metricVal * sessions;
         totalControlSessions += sessions;
@@ -24,7 +24,7 @@ controlDailyDataForMetric.forEach(row => {
 let totalExperimentConversions = 0, totalExperimentSessions = 0;
 experimentDailyDataForMetric.forEach(row => {
     const sessions = parseValue(getCleanedValue(row, 'Sessions'));
-    const metricVal = parseValue(getCleanedValue(row, metricKey));
+    const metricVal = parseMetricValue(getCleanedValue(row, metricKey));
     if (sessions > 0 && metricVal !== null && !isNaN(metricVal)) {
         totalExperimentConversions += metricVal * sessions;
         totalExperimentSessions += sessions;
@@ -81,10 +81,8 @@ function bootstrapMetric(controlDataForBootstrap, experimentDataForBootstrap, me
 
     for (let i = 0; i < iterations; i++) {
         const sampledControlDays = Array.from({ length: controlDataForBootstrap.length }, () => controlDataForBootstrap[Math.floor(Math.random() * controlDataForBootstrap.length)]);
-        const sampledExpDays = Array.from({ length: experimentDataForBootstrap.length }, () => experimentDataForBootstrap[Math.floor(Math.random() * experimentDataForBootstrap.length)]);
-
-        const controlSumProduct = sampledControlDays.reduce((sum, row) => sum + parseValue(getCleanedValue(row, metricKey)) * parseValue(getCleanedValue(row, 'Sessions')), 0);
-        const expSumProduct = sampledExpDays.reduce((sum, row) => sum + parseValue(getCleanedValue(row, metricKey)) * parseValue(getCleanedValue(row, 'Sessions')), 0);
+        const sampledExpDays = Array.from({ length: experimentDataForBootstrap.length }, () => experimentDataForBootstrap[Math.floor(Math.random() * experimentDataForBootstrap.length)]);        const controlSumProduct = sampledControlDays.reduce((sum, row) => sum + parseMetricValue(getCleanedValue(row, metricKey)) * parseValue(getCleanedValue(row, 'Sessions')), 0);
+        const expSumProduct = sampledExpDays.reduce((sum, row) => sum + parseMetricValue(getCleanedValue(row, metricKey)) * parseValue(getCleanedValue(row, 'Sessions')), 0);
 
         const controlMetricValue = controlTotalOriginalSessions > 0 ? controlSumProduct / controlTotalOriginalSessions : 0;
         const expMetricValue = expTotalOriginalSessions > 0 ? expSumProduct / expTotalOriginalSessions : 0;
@@ -158,12 +156,11 @@ function benjaminiHochberg(pValues, alpha = 0.05) {
 
 function calculateSummaryRow(dailyDataForSummary, metricsToCalc, useWeighting) {
     const summary = {};
-    if (!dailyDataForSummary || dailyDataForSummary.length === 0) return summary;
-
-    metricsToCalc.forEach(metricKey => {
-        let totalValue = 0; let totalWeight = 0; let validEntries = 0;
-        dailyDataForSummary.forEach(row => {
-            const metricVal = parseValue(getCleanedValue(row, metricKey));
+    if (!dailyDataForSummary || dailyDataForSummary.length === 0) return summary;    metricsToCalc.forEach(metricKey => {
+        let totalValue = 0; let totalWeight = 0; let validEntries = 0;          dailyDataForSummary.forEach((row, rowIndex) => {
+            const cleanedValue = getCleanedValue(row, metricKey);
+            const metricVal = parseMetricValue(cleanedValue);
+            
             if (metricVal !== null && !isNaN(metricVal)) {
                 if (useWeighting) {
                     const sessionVal = parseValue(getCleanedValue(row, 'Sessions'));
@@ -175,7 +172,9 @@ function calculateSummaryRow(dailyDataForSummary, metricsToCalc, useWeighting) {
                 }
             }
         });
-        summary[metricKey] = (validEntries > 0 && totalWeight > 0) ? totalValue / totalWeight : null;
+          const finalValue = (validEntries > 0 && totalWeight > 0) ? totalValue / totalWeight : null;
+        
+        summary[metricKey] = finalValue;
     });
     summary['Sessions'] = aggregateSessions(dailyDataForSummary); // Use aggregateSessions for consistency
     return summary;

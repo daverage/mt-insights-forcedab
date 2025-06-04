@@ -1,4 +1,5 @@
 function downloadCSV() {
+    const caveatsEl = document.getElementById('analysisCaveats');
     const header = [[
         'Metric',
         'Control',

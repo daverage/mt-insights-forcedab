@@ -1,11 +1,42 @@
-function determineAnalysisStrategyAndPrepareData(ctrlDataInput, expDataInput) {
+function determineAnalysisStrategyAndPrepareData(ctrlDataInput, expDataInput) {    console.log('DEBUG: determineAnalysisStrategyAndPrepareData called with:', {
+        ctrlDataInput: ctrlDataInput ? ctrlDataInput.length : 'null/undefined',
+        expDataInput: expDataInput ? expDataInput.length : 'null/undefined',
+        ctrlSample: ctrlDataInput && ctrlDataInput.length > 0 ? ctrlDataInput[0] : 'no data',
+        expSample: expDataInput && expDataInput.length > 0 ? expDataInput[0] : 'no data'
+    });
+      if (!ctrlDataInput || !expDataInput) {
+        console.error('ERROR: One or both inputs are null/undefined');
+        return null;
+    }
+    
+    // Check if getDateFromRow function is available
+    if (typeof getDateFromRow !== 'function') {
+        console.error('ERROR: getDateFromRow function is not defined');
+        return null;
+    }
+      console.log('DEBUG: About to call getDateFromRow on control data...');
+    let ctrlDates, expDates;
+    try {
+        ctrlDates = ctrlDataInput.map(getDateFromRow).filter(d => d).sort((a, b) => a - b);
+        console.log('DEBUG: ctrlDates extracted:', ctrlDates.length, 'dates');
+    } catch (error) {
+        console.error('ERROR: Exception in getDateFromRow for control data:', error, error.stack);
+        return null;
+    }
+    
+    console.log('DEBUG: About to call getDateFromRow on experiment data...');
+    try {
+        expDates = expDataInput.map(getDateFromRow).filter(d => d).sort((a, b) => a - b);
+        console.log('DEBUG: expDates extracted:', expDates.length, 'dates');
+    } catch (error) {
+        console.error('ERROR: Exception in getDateFromRow for experiment data:', error, error.stack);
+        return null;
+    }console.log('DEBUG: expDates extracted:', expDates.length, 'dates');
+
     let processedControlData = [...ctrlDataInput];
     let processedExperimentData = [...expDataInput];
     let scenario = 'UNKNOWN';
     let details = {};
-
-    const ctrlDates = ctrlDataInput.map(getDateFromRow).filter(d => d).sort((a, b) => a - b);
-    const expDates = expDataInput.map(getDateFromRow).filter(d => d).sort((a, b) => a - b);
 
     if (ctrlDates.length === 0 || expDates.length === 0) {
         scenario = 'NO_VALID_DATES';
@@ -19,12 +50,27 @@ function determineAnalysisStrategyAndPrepareData(ctrlDataInput, expDataInput) {
     const expEndDate = expDates[expDates.length - 1];
 
     details.controlFullRange = `${formatDate(ctrlStartDate)} to ${formatDate(ctrlEndDate)} (${ctrlDates.length} days)`;
-    details.experimentFullRange = `${formatDate(expStartDate)} to ${formatDate(expEndDate)} (${expDates.length} days)`;
-
-    const overlapStart = new Date(Math.max(ctrlStartDate, expStartDate));
+    details.experimentFullRange = `${formatDate(expStartDate)} to ${formatDate(expEndDate)} (${expDates.length} days)`;    const overlapStart = new Date(Math.max(ctrlStartDate, expStartDate));
     const overlapEnd = new Date(Math.min(ctrlEndDate, expEndDate));
 
-    if (overlapStart <= overlapEnd) {
+    // DEBUG: Log overlap calculation    // Check if datasets are actually sequential by examining data distribution
+    // Count how many data points fall in the potential overlap period
+    const ctrlOverlapCount = ctrlDataInput.filter(row => {
+        const d = getDateFromRow(row);
+        return d && d >= overlapStart && d <= overlapEnd;
+    }).length;
+    const expOverlapCount = expDataInput.filter(row => {
+        const d = getDateFromRow(row);
+        return d && d >= overlapStart && d <= overlapEnd;
+    }).length;    // Calculate overlap percentage
+    const ctrlOverlapPct = ctrlDates.length > 0 ? (ctrlOverlapCount / ctrlDates.length) : 0;
+    const expOverlapPct = expDates.length > 0 ? (expOverlapCount / expDates.length) : 0;
+
+    // If overlap exists in terms of date range, but less than 50% of either dataset
+    // actually falls in the overlap period, treat as sequential
+    const isActuallySequential = overlapStart <= overlapEnd && (ctrlOverlapPct < 0.5 || expOverlapPct < 0.5);
+
+    if (overlapStart <= overlapEnd && !isActuallySequential) {
         details.overlapStartDate = formatDate(overlapStart);
         details.overlapEndDate = formatDate(overlapEnd);
         const overlapDuration = Math.round((overlapEnd.getTime() - overlapStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
@@ -49,11 +95,16 @@ function determineAnalysisStrategyAndPrepareData(ctrlDataInput, expDataInput) {
                 const d = getDateFromRow(row);
                 return d && d >= overlapStart && d <= overlapEnd;
             });
-        }
-    } else {
+        }    } else {
         scenario = 'SEQUENTIAL_NO_OVERLAP';
-        details.message = "Critical: Data ranges do not overlap. Analysis will be sequential.";
-    }
+        const reasonMsg = overlapStart > overlapEnd ? 
+            "Data ranges do not overlap." : 
+            "Data ranges have minimal actual overlap (less than 50% of data points in either dataset fall within the overlap period).";
+        details.message = `Critical: ${reasonMsg} Analysis will be sequential.`;
+        // For sequential data, use the original full datasets to provide analytics with warnings
+        processedControlData = [...ctrlDataInput];
+        processedExperimentData = [...expDataInput];
+      }
     
     // Check if after processing, data is still valid for statistical tests (min 2 days)
     if (processedControlData.length < 2 || processedExperimentData.length < 2) {
@@ -67,7 +118,15 @@ function determineAnalysisStrategyAndPrepareData(ctrlDataInput, expDataInput) {
         // it means the overlap was too small. The user needs to know this.
     }
 
-    return { processedControlData, processedExperimentData, scenario, details };
+    // DEBUG: Log final result
+    const result = { processedControlData, processedExperimentData, scenario, details };
+    console.log('DEBUG: determineAnalysisStrategyAndPrepareData returning:', {
+        processedControlData: processedControlData ? processedControlData.length : 'null',
+        processedExperimentData: processedExperimentData ? processedExperimentData.length : 'null',
+        scenario,
+        details
+    });
+    return result;
 }
 
 function displayAnalysisCaveats(currentScenario, currentDetails, currentAnalysisMode = 'smartAB') {
@@ -151,9 +210,10 @@ function displayAnalysisCaveats(currentScenario, currentDetails, currentAnalysis
     if (currentScenario !== 'NO_VALID_DATES'){
             html += `<li>The statistical significance (e.g., P-value or Confidence Interval) indicates the likelihood that the observed difference is not due to random chance, assuming all other A/B testing best practices were followed *for the analyzed period*.</li>`;
     }
-
-
     html += '</ul>';
     caveatsEl.innerHTML = html;
     caveatsEl.style.display = 'block';
 }
+
+// Expose function globally for tests
+window.determineAnalysisStrategyAndPrepareData = determineAnalysisStrategyAndPrepareData;
