@@ -38,24 +38,23 @@
             <input type="file" id="experimentFile" accept=".csv" aria-required="true">
           </div>
           <div class="form-group">
-            <label for="analysisMode">Analysis Mode:</label>
-            <select id="analysisMode">
-              <option value="bootstrap">Bootstrap Confidence Intervals (Recommended)</option>
-              <option value="ttest">Welch's T-Test (on Daily Values)</option>
-              <option value="bayesian_beta_binomial">Bayesian (Beta-Binomial for rates)</option>
-            </select>
+            <fieldset id="analysisModeFieldset" style="margin-bottom: 0;">
+              <legend>Analysis Mode</legend>
+              <label>
+                <input type="radio" name="analysisMode" id="smartABRadio" value="smartAB" checked>
+                Smart A/B Analysis
+              </label>
+              <label style="margin-left: 16px;">
+                <input type="radio" name="analysisMode" id="quickCompareRadio" value="quickCompare">
+                Quick Data Comparison
+              </label>
+            </fieldset>
           </div>
-          <div id="bootstrapOptions" class="form-group">
-            <label for="bootstrapIterations">Bootstrap Iterations:</label>
-            <input type="number" id="bootstrapIterations" value="3000" min="100" step="100">
-          </div>
-          <div class="form-group">
-            <label for="confidenceLevel">Select Significance Level (Alpha):</label>
-            <select id="confidenceLevel">
-              <option value="0.05">95% Confidence (Alpha 0.05)</option>
-              <option value="0.10">90% Confidence (Alpha 0.10)</option>
-              <option value="0.01">99% Confidence (Alpha 0.01)</option>
-            </select>
+          <div class="form-group" id="quickCompareWeightingContainer" style="display:none;">
+            <label for="quickCompareWeightingCheckbox" class="checkbox-label">
+              <input type="checkbox" id="quickCompareWeightingCheckbox">
+              Use Session Weighting for Averages (Quick Compare Only)
+            </label>
           </div>
           <div class="form-group">
             <label for="goalSelect">Highlight Goal Metric:</label>
@@ -66,10 +65,6 @@
               <input type="checkbox" id="useSessionWeighting" checked>
               Weight metric point estimates by session count (for summary values)
             </label>
-          </div>
-          <div id="powerOptions" class="form-group" style="display:none;">
-            <label for="desiredPower">Desired Power (for MDE):</label>
-            <input type="number" id="desiredPower" value="0.8" min="0.5" max="0.99" step="0.01">
           </div>
         </div>
         <div style="flex: 0 0 220px; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; min-width: 180px;">
@@ -121,29 +116,40 @@
         </table>
       </div>
 
+      <!-- === ADDED GOAL METRIC CHART SECTION HERE === -->
+      <div id="goalMetricChartContainer" style="width:100%;max-width:900px;margin:32px auto 0;display:none;">
+        <h3 style="margin-bottom:8px;">Goal Metric Trend</h3>
+        <canvas id="myGoalChart" height="300" aria-label="Goal Metric Trend Chart" role="img"></canvas>
+      </div>
+      <!-- === END GOAL METRIC CHART SECTION === -->
+
       <section class="info-section" aria-labelledby="info-heading"> <!-- Changed aria-label to aria-labelledby -->
         <h3 id="info-heading">How to Use & Statistical Notes</h3>
         <p><strong>What This Tool Does:</strong></p>
         <ul>
-          <li><strong>Upload & Compare:</strong> Upload two CSV files (Control & Experiment) with <strong>daily A/B test data</strong>. The tool will attempt to align data to concurrent date ranges for fair comparison.</li>
-          <li><strong>Clear Change Breakdown:</strong> For each metric, see the absolute change (e.g., +£0.15, +2.5pp), relative change (lift, %), and uncertainty (confidence interval or p-value).</li>
-          <li><strong>Statistical Rigor:</strong>
+          <li><strong>Upload & Compare:</strong> Upload two CSV files (Control & Experiment) with <strong>daily A/B test data</strong>. The tool aligns data to concurrent date ranges for fair comparison.</li>
+          <li><strong>Choose Analysis Mode:</strong> Select <strong>Smart A/B Analysis</strong> (default, robust statistical inference) or <strong>Quick Data Comparison</strong> (fast, descriptive summary). Smart A/B provides confidence intervals and significance; Quick Compare gives direct differences only.</li>
+          <li><strong>Session Weighting:</strong> Optionally weight averages by session count for more accurate summary values. In Quick Compare, you can toggle session weighting for averages.</li>
+          <li><strong>Clear Change Breakdown:</strong> For each metric, see the absolute change (e.g., +£0.15, +2.5pp) and relative change (lift, %). In Smart A/B mode, uncertainty (confidence interval) and statistical significance are shown. In Quick Compare, only descriptive changes are shown.</li>
+          <li><strong>Statistical Rigor (Smart A/B):</strong>
               <ul>
-                  <li><strong>Bootstrap Mode (Recommended):</strong> Uses robust resampling to estimate a confidence interval (CI) for the lift. <strong>CI = Confidence Interval</strong>: the range of plausible values for the true effect, e.g., "CI: (+2.5%, +8.1%)" means the true lift is likely between +2.5% and +8.1%.</li>
-                  <li><strong>Welch's T-Test Mode:</strong> Compares daily means, providing a p-value. Assumes daily values are approximately normal.</li>
+                  <li><strong>Bootstrap Confidence Intervals:</strong> Robust resampling estimates a confidence interval (CI) for the lift. <strong>CI = Confidence Interval</strong>: the range of plausible values for the true effect.</li>
+                  <li><strong>Welch's T-Test:</strong> Compares daily means, providing a p-value. Assumes daily values are approximately normal.</li>
+                  <li><strong>Multiple Metrics Correction:</strong> Adjusts for multiple comparisons using the Benjamini-Hochberg procedure to control false discoveries.</li>
               </ul>
           </li>
-          <li><strong>Significance Highlighted:</strong> Statistically significant results (at your chosen confidence level) are clearly marked with a star and "Yes" in the table. Arrows indicate direction and whether a change is good or bad for each metric.</li>
-          <li><strong>Multiple Metrics Correction (Bootstrap Mode):</strong> Adjusts for multiple comparisons using the Benjamini-Hochberg procedure to control false discoveries when using bootstrap mode.</li>
+          <li><strong>Significance Highlighted (Smart A/B):</strong> Statistically significant results are marked with a star and "Yes" in the table. Arrows indicate direction and whether a change is good or bad for each metric.</li>
+          <li><strong>Quick Data Comparison:</strong> Shows only the direct difference between groups, with no statistical inference. Use for a fast, descriptive check.</li>
         </ul>
         <p><strong>Best Practices & Caveats:</strong></p>
         <ol>
           <li><strong>Data Quality:</strong> Ensure both CSVs have accurate, daily data. The tool requires an 'Offer Date' column (YYYY-MM-DD) and a 'Sessions' column. Remove outliers and anomalies from both files before upload if possible.</li>
-          <li><strong>Significance ≠ Importance:</strong> "Significant? Yes" means the result is unlikely to due to random chance *under the conditions of the analysis*, but always consider the size and business impact of the change. "No" means the test was inconclusive, not that there is no effect.</li>
+          <li><strong>Significance ≠ Importance:</strong> "Significant? Yes" means the result is unlikely to due to random chance <em>under the conditions of the analysis</em>, but always consider the size and business impact of the change. "No" means the test was inconclusive, not that there is no effect.</li>
           <li><strong>Multiple Metrics:</strong> Testing many metrics increases the chance of a false positive. Focus on your primary goal metric(s) for decisions.</li>
           <li><strong>Assumptions:</strong> Bootstrap is robust to non-normality; t-test assumes daily values are roughly normal. Both require representative daily data for the analyzed period.</li>
           <li><strong>External Factors:</strong> The tool cannot account for outside events that may have influenced results during the test period.</li>
-          <li><strong>Sequential Tests:</strong> If data is from non-overlapping periods, the tool will warn you. Such results are highly susceptible to time-based confounding factors.</li>
+          <li><strong>Sequential or Non-Overlapping Data:</strong> The tool will warn you if data is from non-overlapping periods. Such results are highly susceptible to time-based confounding factors.</li>
+          <li><strong>Quick Compare Limitations:</strong> Quick Data Comparison does not provide confidence intervals or significance. Use Smart A/B for rigorous inference.</li>
         </ol>
         <p><em>This tool provides statistical evidence. Always combine with business context and judgment for decisions. Pay close attention to any automated notes and caveats provided above the results table.</em></p>
       </section>
@@ -153,8 +159,15 @@
     <p>© <span id="currentYear"></span> A/B Test Analyzer Tool. For demonstration purposes.</p>
   </footer>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jstat@latest/dist/jstat.min.js"></script>
-  <script src="script.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jstat@latest/dist/jstat.min.js"></script>  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>  <!-- Modular application scripts -->  <script src="scripts/utils.js"></script>
+  <script src="scripts/statistics.js"></script>
+  <script src="scripts/strategy.js"></script>
+  <script src="scripts/csvExport.js"></script>
+  <script src="scripts/insights.js"></script>
+  <script src="scripts/charts.js"></script>
+  <script src="scripts/ui.js"></script>
+  <script src="scripts/main.js"></script>
+
   <script>
     // Simple script to set current year in footer
     document.getElementById('currentYear').textContent = new Date().getFullYear();
